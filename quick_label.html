@@ -83,7 +83,8 @@
       <div class="filters">
         <input id="search" placeholder="搜索文件名">
         <button id="pendingOnly">显示全部</button>
-        <button id="fallOnly">仅看 Fall</button>
+        <button id="fallOnly">仅看跌倒</button>
+        <button id="caregiverOnly">仅看护工 Fall</button>
       </div>
     </div>
     <div id="videoList" class="list"></div>
@@ -159,13 +160,13 @@ const SHORTCUT_HINTS={fall:'fallKeyHint',no_fall:'safeKeyHint',caregiver_fall:'c
 function normalizeKey(key){if(key===' ')return'space';return String(key||'').toLowerCase()}
 function displayKey(key){return({arrowleft:'←',arrowright:'→',arrowup:'↑',arrowdown:'↓',backspace:'Backspace',enter:'Enter',space:'Space',delete:'Delete',home:'Home',end:'End',pageup:'PageUp',pagedown:'PageDown'}[key]||key.toUpperCase())}
 function loadPreferences(){try{const saved=JSON.parse(localStorage.getItem(PREFERENCES_KEY)||'{}');const seconds=Math.min(600,Math.max(.1,Number(saved.seekSeconds)||5));const shortcuts={...DEFAULT_PREFERENCES.shortcuts,...(saved.shortcuts||{})};const normalized=Object.fromEntries(Object.entries(shortcuts).map(([name,key])=>[name,normalizeKey(key)]));const values=Object.values(normalized);if(values.some(key=>!key)||new Set(values).size!==values.length)throw new Error('invalid');return{seekSeconds:seconds,shortcuts:normalized}}catch{return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES))}}
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences()};
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences()};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
 async function api(url,options={}){const response=await fetch(url,options);const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
 function labelName(label){return label==='fall'?'跌倒':label==='no_fall'?'不跌倒':label==='caregiver_fall'?'护工 Fall':'待判断'}
-function matchesFilters(v){const q=$('search').value.trim().toLowerCase();return(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||['fall','caregiver_fall'].includes(state.labels[v.id]))}
+function matchesFilters(v){const q=$('search').value.trim().toLowerCase();return(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||state.labels[v.id]==='fall')&&(!state.caregiverOnly||state.labels[v.id]==='caregiver_fall')}
 function visibleVideos(){return state.videos.filter(v=>v.id===state.current?.id||matchesFilters(v))}
 function renderList(){
   const videos=visibleVideos();
@@ -192,8 +193,9 @@ function renderPreferences(){const p=state.preferences;$('seekSeconds').value=p.
 function changeShortcut(action,key){key=normalizeKey(key);const blocked=new Set(['','tab','escape','shift','control','alt','meta','capslock','unidentified','dead']);if(blocked.has(key)){alert('这个键用于系统或窗口操作，请换一个键。');renderPreferences();return}const used=Object.entries(state.preferences.shortcuts).find(([name,current])=>name!==action&&current===key);if(used){alert(`${displayKey(key)} 已用于“${ACTION_NAMES[used[0]]}”，请换一个键。`);renderPreferences();return}state.preferences.shortcuts[action]=key;savePreferences();renderPreferences()}
 async function init(){renderPreferences();const data=await api('/api/videos');state.videos=data.videos;$('paths').textContent=`项目：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}`;for(const v of data.videos)if(v.label)state.labels[v.id]=v.label;const saved=await api('/api/state');state.labels=saved.labels||state.labels;renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
 $('search').oninput=renderList;
-$('pendingOnly').onclick=()=>{state.pendingOnly=!state.pendingOnly;$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
-$('fallOnly').onclick=()=>{state.fallOnly=!state.fallOnly;if(state.fallOnly)state.pendingOnly=false;$('fallOnly').textContent=state.fallOnly?'取消 Fall 筛选':'仅看 Fall';$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
+$('pendingOnly').onclick=()=>{state.pendingOnly=!state.pendingOnly;if(state.pendingOnly){state.fallOnly=false;state.caregiverOnly=false;$('fallOnly').textContent='仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall'}$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
+$('fallOnly').onclick=()=>{state.fallOnly=!state.fallOnly;if(state.fallOnly){state.pendingOnly=false;state.caregiverOnly=false}$('fallOnly').textContent=state.fallOnly?'取消跌倒筛选':'仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall';$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
+$('caregiverOnly').onclick=()=>{state.caregiverOnly=!state.caregiverOnly;if(state.caregiverOnly){state.pendingOnly=false;state.fallOnly=false}$('caregiverOnly').textContent=state.caregiverOnly?'取消护工筛选':'仅看护工 Fall';$('fallOnly').textContent='仅看跌倒';$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
 $('playPause').onclick=()=>player.paused?player.play():player.pause();$('loopVideo').onclick=toggleLoop;$('speed').onchange=()=>player.playbackRate=Number($('speed').value);
 $('markFall').onclick=()=>saveLabel('fall');$('markSafe').onclick=()=>saveLabel('no_fall');$('markCaregiver').onclick=()=>saveLabel('caregiver_fall');$('clearLabel').onclick=clearLabel;
 $('seekSeconds').onchange=()=>{state.preferences.seekSeconds=Math.min(600,Math.max(.1,Number($('seekSeconds').value)||5));savePreferences();renderPreferences()};
