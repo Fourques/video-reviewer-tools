@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频审核项目中心</title>
+<style>
+:root{color-scheme:dark;--bg:#0b111b;--panel:#121c2b;--line:#27364b;--text:#edf4ff;--muted:#96a8bf;--blue:#63a7ff;--blue2:#2878e7;--green:#4ad6a0;--red:#ff7a84}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% 0,#172945 0,transparent 38%),var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}.page{width:min(980px,calc(100% - 32px));margin:0 auto;padding:30px 0 42px}h1{font-size:clamp(24px,4vw,36px);margin:0 0 5px}.lead{color:var(--muted);margin:0 0 22px}.card{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0;box-shadow:0 14px 34px #0004}.card h2{font-size:17px;margin:0 0 13px}.row{display:flex;gap:10px;align-items:center}.row+.row{margin-top:10px}input,select,button{font:inherit}input,select{width:100%;min-width:0;border:1px solid #344760;background:#0b1421;color:var(--text);border-radius:9px;padding:10px 12px;outline:none}input:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px #398cff2c}button{border:1px solid #38506e;background:#1a2a3f;color:var(--text);border-radius:9px;padding:9px 14px;cursor:pointer;white-space:nowrap}button:hover{border-color:#6688b2;background:#223852}.primary{border-color:var(--blue2);background:var(--blue2);font-weight:700;padding:11px 22px}.primary:hover{background:#398af1}.secondary{color:#bcd0e8}.hint{font-size:13px;color:var(--muted);margin:8px 0 0}.modes{display:grid;grid-template-columns:1fr 1fr;gap:12px}.mode{display:block;border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer;background:#0c1623}.mode:has(input:checked){border-color:var(--blue);background:#132944;box-shadow:0 0 0 2px #398cff24}.mode input{width:auto;margin:0 7px 0 0;vertical-align:middle}.mode strong{font-size:16px}.mode span{display:block;color:var(--muted);font-size:13px;margin:5px 0 0 24px}.field{display:grid;grid-template-columns:130px 1fr;align-items:center;gap:10px}.field+.field{margin-top:10px}.actions{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px}.status{min-height:24px;color:var(--muted)}.status.error{color:var(--red)}.status.good{color:var(--green)}.scan-note{display:inline-flex;align-items:center;gap:7px;color:var(--green);font-size:13px}.dot{width:8px;height:8px;background:var(--green);border-radius:50%}.modal{position:fixed;inset:0;background:#04070dbd;display:none;align-items:center;justify-content:center;padding:18px;z-index:10}.modal.show{display:flex}.dialog{width:min(760px,100%);height:min(650px,90vh);display:flex;flex-direction:column;background:#111b29;border:1px solid #38506e;border-radius:17px;box-shadow:0 24px 80px #000b;overflow:hidden}.dialog-head{padding:16px;border-bottom:1px solid var(--line)}.dialog-head h3{margin:0 0 10px}.roots{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.roots button{padding:5px 9px;font-size:12px}.folder-list{padding:8px 14px;overflow:auto;flex:1}.folder{display:flex;width:100%;border:0;border-bottom:1px solid #203047;border-radius:0;background:transparent;text-align:left;padding:11px 8px}.folder:hover{background:#1a2b40}.folder::before{content:"📁";margin-right:10px}.dialog-foot{display:flex;justify-content:space-between;gap:10px;border-top:1px solid var(--line);padding:13px 16px}.empty{color:var(--muted);padding:24px;text-align:center}@media(max-width:680px){.page{width:min(100% - 20px,980px);padding-top:18px}.card{padding:14px}.modes{grid-template-columns:1fr}.field{grid-template-columns:1fr;gap:4px}.row.wrap{flex-wrap:wrap}.actions{align-items:stretch;flex-direction:column}.primary{width:100%}}
+</style>
+</head>
+<body>
+<main class="page">
+  <h1>视频审核项目中心</h1>
+  <p class="lead">选择项目后进入审核页面。所有数据都在运行脚本的电脑或服务器上处理。</p>
+
+  <section class="card">
+    <h2>1. 选择项目目录</h2>
+    <div class="row wrap">
+      <select id="recent" aria-label="最近项目"><option value="">最近使用的项目…</option></select>
+      <button id="browse">浏览目录…</button>
+    </div>
+    <div class="row"><input id="source" placeholder="也可以直接粘贴完整目录路径"></div>
+    <p class="hint"><span class="scan-note"><span class="dot"></span>只扫描这个目录第一层的视频，不进入子目录</span></p>
+  </section>
+
+  <section class="card">
+    <h2>2. 选择审核功能</h2>
+    <div class="modes">
+      <label class="mode"><input type="radio" name="mode" value="clip" checked><strong>固定 8 秒片段审核</strong><span>选择一段或多段 8 秒视频，也可判定整段无跌倒</span></label>
+      <label class="mode"><input type="radio" name="mode" value="label"><strong>整段 Fall 快速分类</strong><span>浏览完整视频，将人工判定为 Fall 的原视频导出</span></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>3. 确认输出位置</h2>
+    <div id="clipOutputs">
+      <label class="field"><span>8 秒片段</span><input id="output"></label>
+      <label class="field"><span>无跌倒原视频</span><input id="noFallOutput"></label>
+    </div>
+    <div id="labelOutputs" hidden>
+      <label class="field"><span>Fall 原视频</span><input id="fallOutput"></label>
+    </div>
+    <p class="hint">新项目会自动使用项目目录下的 output、no_fall_output 或 fall_output；这里可以直接修改。</p>
+  </section>
+
+  <div class="actions">
+    <div><button id="defaults" class="secondary">恢复默认输出</button></div>
+    <div id="status" class="status"></div>
+    <button id="start" class="primary">开始审核</button>
+  </div>
+</main>
+
+<div id="modal" class="modal" role="dialog" aria-modal="true">
+  <div class="dialog">
+    <div class="dialog-head">
+      <h3>浏览运行脚本设备上的目录</h3>
+      <div class="row"><input id="folderPath"><button id="goFolder">前往</button></div>
+      <div id="roots" class="roots"></div>
+    </div>
+    <div id="folderList" class="folder-list"></div>
+    <div class="dialog-foot"><button id="closeModal">取消</button><button id="selectFolder" class="primary">选择当前目录</button></div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);let config={},loadedSource='',currentFolder='';
+function mode(){return document.querySelector('input[name=mode]:checked').value}
+function join(base,name){const sep=base.includes('\\')?'\\':'/';return base.replace(/[\\/]$/,'')+sep+name}
+function setStatus(text,type=''){const el=$('status');el.textContent=text;el.className='status '+type}
+function defaults(source){return{output:join(source,'output'),no_fall_output:join(source,'no_fall_output'),fall_output:join(source,'fall_output')}}
+function applyProject(source,useSaved=true){source=source.trim();if(!source)return;$('source').value=source;loadedSource=source;const saved=useSaved?(config.projects?.[source]||{}):{};const d=defaults(source);$('output').value=saved.output||d.output;$('noFallOutput').value=saved.no_fall_output||d.no_fall_output;$('fallOutput').value=saved.fall_output||d.fall_output;if(saved.mode){const radio=document.querySelector(`input[name=mode][value="${saved.mode}"]`);if(radio)radio.checked=true}showMode()}
+function showMode(){const label=mode()==='label';$('clipOutputs').hidden=label;$('labelOutputs').hidden=!label}
+async function api(url,options){const response=await fetch(url,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.error||`请求失败 ${response.status}`);return data}
+async function loadFolder(path){try{const data=await api('/api/directories?'+new URLSearchParams({path}));currentFolder=data.path;$('folderPath').value=data.path;const list=$('folderList');list.textContent='';if(data.parent){const b=document.createElement('button');b.className='folder';b.textContent='..  上一级';b.onclick=()=>loadFolder(data.parent);list.appendChild(b)}for(const item of data.directories){const b=document.createElement('button');b.className='folder';b.textContent=item.name;b.title=item.path;b.onclick=()=>loadFolder(item.path);list.appendChild(b)}if(!data.parent&&!data.directories.length)list.innerHTML='<div class="empty">没有可进入的子目录</div>';if(data.truncated)list.insertAdjacentHTML('beforeend','<div class="empty">目录过多，只显示前 1000 个</div>')}catch(error){setStatus(error.message,'error')}}
+async function init(){config=await api('/api/config');for(const path of config.recentProjects||[]){const option=document.createElement('option');option.value=path;option.textContent=path;$('recent').appendChild(option)}const roots=$('roots');for(const path of config.roots||[]){const b=document.createElement('button');b.textContent=path;b.onclick=()=>loadFolder(path);roots.appendChild(b)}if(config.recentProjects?.length){applyProject(config.recentProjects[0])}else{document.querySelector(`input[name=mode][value="${config.lastMode||'clip'}"]`).checked=true;showMode()}}
+$('recent').onchange=event=>{if(event.target.value)applyProject(event.target.value)};
+$('source').onblur=()=>{const value=$('source').value.trim();if(value&&value!==loadedSource)applyProject(value)};
+for(const radio of document.querySelectorAll('input[name=mode]'))radio.onchange=showMode;
+$('defaults').onclick=()=>{const source=$('source').value.trim();if(source)applyProject(source,false)};
+$('browse').onclick=()=>{$('modal').classList.add('show');loadFolder($('source').value.trim()||config.home||config.cwd)};
+$('closeModal').onclick=()=>$('modal').classList.remove('show');
+$('goFolder').onclick=()=>loadFolder($('folderPath').value);
+$('folderPath').onkeydown=event=>{if(event.key==='Enter')loadFolder(event.target.value)};
+$('selectFolder').onclick=()=>{applyProject(currentFolder);$('modal').classList.remove('show')};
+$('modal').onclick=event=>{if(event.target===$('modal'))$('modal').classList.remove('show')};
+$('start').onclick=async()=>{let source=$('source').value.trim();if(!source){setStatus('请先选择项目目录','error');return}if(source!==loadedSource)applyProject(source);const payload={source,mode:mode(),output:$('output').value,no_fall_output:$('noFallOutput').value,fall_output:$('fallOutput').value};$('start').disabled=true;try{const data=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});setStatus(data.message,'good');waitForReviewer()}catch(error){$('start').disabled=false;setStatus(error.message,'error')}};
+async function waitForReviewer(){for(;;){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/api/videos',{cache:'no-store'});if(response.ok){location.replace('/?project_started='+Date.now());return}}catch{}}}
+init().catch(error=>setStatus(error.message,'error'));
+</script>
+</body>
+</html>

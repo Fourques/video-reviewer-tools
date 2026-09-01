@@ -1,0 +1,13 @@
+{
+  "remote.autoForwardPorts": true,
+  "remote.autoForwardPortsSource": "process",
+  "remote.restoreForwardedPorts": true,
+  "remote.portsAttributes": {
+    "8765-8864": {
+      "label": "视频人工审核工具",
+      "onAutoForward": "openBrowserOnce",
+      "requireLocalPort": false,
+      "protocol": "http"
+    }
+  }
+}

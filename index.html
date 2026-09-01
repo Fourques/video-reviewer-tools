@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>8 秒视频人工审核工具</title>
+  <style>
+    :root { color-scheme: dark; --bg:#101217; --panel:#191d25; --soft:#242a35; --line:#343c4b; --text:#edf1f7; --muted:#9aa6b6; --accent:#68d5b4; --warn:#ffc76b; --bad:#ff7d86; }
+    * { box-sizing: border-box; }
+    html, body { min-height:100%; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui,-apple-system,"Microsoft YaHei",sans-serif; overflow:hidden; }
+    button, input, select { font:inherit; }
+    button { border:1px solid var(--line); border-radius:8px; background:var(--soft); color:var(--text); padding:8px 12px; cursor:pointer; }
+    button:hover { border-color:var(--accent); }
+    button.primary { background:#166d5b; border-color:#2d9f86; }
+    button.danger { color:#ffd7da; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .app { display:grid; grid-template-columns:minmax(260px,320px) minmax(0,1fr); width:100%; max-width:100vw; height:100vh; height:100dvh; }
+    aside { border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0; min-height:0; height:100vh; height:100dvh; background:#13161c; }
+    body.sidebar-hidden .app { grid-template-columns:0 minmax(0,1fr); }
+    body.sidebar-hidden aside { overflow:hidden; border:0; }
+    .side-head { padding:15px; border-bottom:1px solid var(--line); }
+    h1 { font-size:18px; margin:0 0 8px; }
+    .path { color:var(--muted); font-size:12px; word-break:break-all; }
+    .filters { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
+    .filters input { min-width:0; flex:1 0 100%; border:1px solid var(--line); background:var(--bg); color:var(--text); border-radius:7px; padding:8px; }
+    .video-list { overflow:auto; flex:1; min-height:80px; }
+    .video-item { padding:11px 14px; border-bottom:1px solid #252a34; cursor:pointer; }
+    .video-item:hover, .video-item.active { background:#202630; }
+    .video-item.active { border-left:3px solid var(--accent); padding-left:11px; }
+    .video-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .video-meta { display:flex; gap:8px; color:var(--muted); font-size:12px; margin-top:4px; }
+    .badge { border-radius:9px; padding:1px 6px; background:#313949; }
+    .badge.ok { color:var(--accent); }
+    .badge.warn { color:var(--warn); }
+    .side-foot { padding:12px; border-top:1px solid var(--line); display:grid; gap:8px; }
+    main { min-width:0; min-height:0; height:100vh; height:100dvh; overflow:hidden; padding:12px 16px; }
+    #workspace { width:min(100%, 1500px); height:100%; margin:0 auto; display:flex; flex-direction:column; min-height:0; }
+    .empty { height:80vh; display:grid; place-items:center; color:var(--muted); font-size:16px; }
+    .hidden { display:none !important; }
+    .topbar { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:10px 16px; margin-bottom:10px; }
+    .topbar > div:first-child { min-width:0; flex:1; }
+    .current-name { font-size:18px; font-weight:650; word-break:break-all; }
+    .current-path { color:var(--muted); font-size:12px; word-break:break-all; }
+    .nav { display:flex; flex-wrap:wrap; gap:7px; flex:none; }
+    .review-grid { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(370px,.9fr); gap:12px; flex:1; min-height:0; }
+    .media-pane, .selection-pane { min-width:0; min-height:0; }
+    .media-pane { display:flex; flex-direction:column; }
+    .selection-pane { display:flex; flex-direction:column; overflow:hidden; }
+    video { display:block; width:100%; max-width:100%; height:min(53dvh, 520px); min-height:240px; background:#000; border-radius:10px; object-fit:contain; }
+    .playrow { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:8px 0; }
+    .time { font-variant-numeric:tabular-nums; min-width:165px; color:var(--accent); font-size:15px; }
+    .timeline { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px; }
+    .overview { position:relative; height:20px; margin:1px 2px 8px; border-radius:5px; background:#303744; cursor:pointer; overflow:hidden; }
+    .window-bar { position:absolute; z-index:2; top:2px; bottom:2px; left:0; min-width:5px; border-radius:4px; background:#38bd9866; border:1px solid var(--accent); pointer-events:none; }
+    .saved-markers { position:absolute; inset:0; z-index:1; pointer-events:none; }
+    .saved-marker { position:absolute; top:3px; bottom:3px; min-width:5px; border:0; border-radius:3px; padding:0; background:#f2a444; box-shadow:0 0 0 1px #ffd08a inset; pointer-events:auto; cursor:pointer; }
+    .saved-marker:hover { filter:brightness(1.25); }
+    .playhead { position:absolute; z-index:3; top:0; bottom:0; left:0; width:2px; margin-left:-1px; background:#fff; box-shadow:0 0 3px #000; pointer-events:none; }
+    .overview-legend { display:flex; justify-content:flex-end; gap:12px; margin:-4px 2px 3px; color:var(--muted); font-size:11px; }
+    input[type=range] { width:100%; accent-color:var(--accent); }
+    .range-labels { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; }
+    .selection-info { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 12px; margin-top:8px; }
+    .selection-info strong { color:var(--accent); font-variant-numeric:tabular-nums; }
+    .adjust { display:flex; flex-wrap:wrap; gap:6px; margin-top:11px; }
+    .addrow { display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin:9px 0; }
+    select { background:var(--soft); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; }
+    .shortcut-strip { display:flex; flex-wrap:wrap; gap:5px 11px; padding:7px 9px; margin:7px 0; border-radius:8px; background:#121820; color:var(--muted); font-size:11px; }
+    .shortcut-strip span { white-space:nowrap; }
+    .clips { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:auto; flex:1; min-height:105px; }
+    .clips h2 { font-size:15px; padding:11px 13px; margin:0; border-bottom:1px solid var(--line); }
+    table { width:100%; min-width:0; border-collapse:collapse; }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid #2b313d; }
+    .clips td:last-child { white-space:nowrap; }
+    .clips td button { padding:5px 7px; }
+    th { color:var(--muted); font-weight:500; }
+    .notice { margin:10px 0; color:var(--muted); }
+    .notice.warn { color:var(--warn); }
+    .status { white-space:pre-wrap; color:var(--muted); min-height:20px; }
+    .status.error { color:var(--bad); }
+    .status.done { color:var(--accent); }
+    dialog { color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:12px; max-width:680px; }
+    dialog::backdrop { background:#0009; }
+    kbd { border:1px solid var(--line); background:#101319; padding:1px 5px; border-radius:4px; }
+    .label-help { color:var(--muted); font-size:12px; }
+    @media(max-height:760px) and (min-width:1051px) {
+      main { padding:8px 12px; }
+      video { height:min(49dvh, 400px); min-height:205px; }
+      .playrow { margin:7px 0; }
+      .timeline { padding:9px 11px; }
+      .adjust { margin-top:7px; }
+      .topbar { margin-bottom:6px; }
+      button { padding:6px 9px; }
+    }
+    @media(max-width:1050px) {
+      .app { grid-template-columns:minmax(220px,260px) minmax(0,1fr); }
+      body { overflow:auto; }
+      main { height:auto; min-height:100dvh; overflow:visible; padding:12px; }
+      #workspace { height:auto; }
+      .review-grid { display:block; }
+      .selection-pane { overflow:visible; }
+      .video-meta { flex-wrap:wrap; }
+      video { max-height:46vh; max-height:46dvh; }
+    }
+    @media(max-width:700px) {
+      body { overflow:auto; }
+      .app { display:block; height:auto; min-height:100dvh; }
+      aside { position:relative; width:100%; height:auto; max-height:none; border-right:0; border-bottom:1px solid var(--line); }
+      body.sidebar-hidden aside { display:none; }
+      .video-list { max-height:22dvh; }
+      .side-foot { grid-template-columns:1fr 1fr; }
+      .side-foot .path, .side-foot .status { grid-column:1 / -1; }
+      main { width:100%; height:auto; overflow:visible; padding:10px; }
+      video { height:auto; min-height:0; max-height:55dvh; }
+      .topbar > div:first-child { flex-basis:100%; }
+      .nav { width:100%; }
+      .selection-info { align-items:flex-start; flex-direction:column; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="side-head">
+      <h1>8 秒视频人工审核</h1>
+      <div id="sourcePath" class="path"></div>
+      <div class="filters">
+        <input id="search" placeholder="搜索文件名">
+        <button id="onlyPending">仅未审核</button>
+        <button id="onlyLong">显示全部时长</button>
+      </div>
+    </div>
+    <div id="videoList" class="video-list"></div>
+    <div class="side-foot">
+      <div id="summary" class="path"></div>
+      <button id="exportAll" class="primary">导出已提交结果</button>
+      <button id="rescan">重新扫描目录</button>
+      <button id="help">快捷键与说明</button>
+      <div id="exportStatus" class="status"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="empty" class="empty">请选择左侧视频开始审核</div>
+    <section id="workspace" class="hidden">
+      <div class="topbar">
+        <div><div id="currentName" class="current-name"></div><div id="currentPath" class="current-path"></div></div>
+        <div class="nav"><button id="toggleSidebar">隐藏列表</button><button id="previous">上一个</button><button id="next">下一个</button></div>
+      </div>
+      <div class="review-grid">
+        <div class="media-pane">
+          <video id="player" controls preload="metadata"></video>
+          <div class="playrow">
+            <span id="playerTime" class="time">00:00.000 / 00:00.000</span>
+            <button id="setStart">当前画面作为起点</button>
+            <button id="setCenter">当前画面放在中间 (C)</button>
+            <button id="preview">循环预览这 8 秒 (W)</button>
+            <label>速度 <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select></label>
+            <button id="makeProxy">无法播放？生成兼容预览</button>
+          </div>
+
+          <div class="shortcut-strip">
+            <span><kbd>S</kbd> 播放/暂停</span><span><kbd>←</kbd>/<kbd>→</kbd> 浏览 ±1 秒并作为起点</span>
+            <span><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> ±0.1 秒并作为起点</span><span><kbd>C</kbd> 当前画面居中</span>
+            <span><kbd>A</kbd>/<kbd>D</kbd> 8 秒窗口 ±5 秒</span><span><kbd>W</kbd> 循环预览</span>
+            <span><kbd>Space</kbd> 提交片段</span><span><kbd>Enter</kbd> 完成并下一个</span>
+          </div>
+        </div>
+
+        <div class="selection-pane">
+          <div class="timeline">
+            <div id="overview" class="overview" title="点击可滑动浏览；橙色为已提交片段，绿色为当前 8 秒，白线为播放位置"><div id="savedMarkers" class="saved-markers"></div><div id="windowBar" class="window-bar"></div><div id="playhead" class="playhead"></div></div>
+            <div class="overview-legend"><span>橙色：已提交</span><span>绿色：当前 8 秒</span><span>白线：播放位置</span></div>
+            <input id="clipStart" type="range" min="0" max="0" value="0" step="0.04">
+            <div class="range-labels"><span>视频开始</span><span id="durationLabel"></span></div>
+            <div class="selection-info">
+              <span>固定 8 秒窗口：<strong id="selectionRange">00:00.000 → 00:08.000</strong></span>
+              <label><input id="followPlayer" type="checkbox" checked> 播放时窗口跟随当前画面</label>
+              <label><input id="snapKeyframe" type="checkbox" checked> 吸附到前一关键帧（零重编码）</label>
+            </div>
+            <div class="adjust">
+              <button data-shift="-5">−5 秒</button><button data-shift="-1">−1 秒</button><button data-shift="-0.1">−0.1 秒</button>
+              <button data-shift="0.1">+0.1 秒</button><button data-shift="1">+1 秒</button><button data-shift="5">+5 秒</button>
+              <button id="jumpSelection">跳到选择起点</button>
+            </div>
+          </div>
+
+          <div id="keyframeNotice" class="notice">正在读取关键帧…</div>
+          <div class="addrow">
+            <label>标签 <select id="label"><option>跌倒</option><option>场景变化</option><option>大幅运动</option><option>未分类</option></select></label>
+            <span class="label-help">只写入 CSV，不影响文件名</span>
+            <button id="addClip" class="primary">提交当前 8 秒</button>
+            <button id="markNoFall">全程无跌倒</button>
+            <button id="toggleReviewed">标记已审核</button>
+            <span id="saveStatus" class="status"></span>
+          </div>
+
+          <div class="clips">
+            <h2>该视频已提交片段（点击橙色标记也可预览）</h2>
+            <table><thead><tr><th>#</th><th>起止时间</th><th>标签</th><th>操作</th></tr></thead><tbody id="clipRows"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="helpDialog">
+  <h2>操作说明</h2>
+  <p>播放器和 8 秒窗口现已联动：正常播放时窗口默认跟随当前画面并把它放在中间；直接拖动绿色窗口时，播放器会暂停并跳到该窗口起点。循环预览时窗口固定不动。</p>
+  <p><kbd>S</kbd> 播放/暂停；<kbd>←</kbd>/<kbd>→</kbd> 暂停并浏览 ±1 秒，同时把到达的画面作为片段起点；按住 <kbd>Shift</kbd> 时为 ±0.1 秒；<kbd>C</kbd> 把当前画面放在 8 秒中间；<kbd>A</kbd>/<kbd>D</kbd> 移动窗口 ±5 秒；<kbd>W</kbd> 开始或停止循环预览；<kbd>Space</kbd> 提交当前片段；<kbd>Enter</kbd> 完成并打开下一个。如果该视频没有片段，按 <kbd>Enter</kbd> 会自动标记为“全程无跌倒”。</p>
+  <p>“提交当前 8 秒”只保存选择并显示橙色标记；点击左侧“导出已提交结果”后才真正生成文件。</p>
+  <p>“全程无跌倒”与片段互斥，导出时会把整个原视频原样复制到无跌倒目录。</p>
+  <p>标签仅用于 <code>clips.csv</code> 中的筛选和追溯，不会出现在视频文件名中。</p>
+  <p>最终文件只使用 FFmpeg <code>-c copy</code> 从原视频导出。兼容预览即使经过压缩，也绝不会用于最终导出。</p>
+  <p>关键帧吸附是“任意起点”和“完全零重编码”之间的必要处理。页面展示和保存的起点会吸附到所选位置之前最近的关键帧。</p>
+  <form method="dialog"><button>关闭</button></form>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { videos:[], current:null, keyframes:[], selections:{}, reviewed:{}, noFall:{}, pendingOnly:false, longOnly:true, looping:false, syncingFromSelection:false };
+const player = $('player');
+let sliderSeekTimer=null;
+let shortcutAction=Promise.resolve();
+
+function runShortcut(action){
+  shortcutAction=shortcutAction.then(action).catch(error=>console.error(error));
+}
+
+function formatTime(seconds) {
+  seconds = Math.max(0, Number(seconds) || 0);
+  const hours = Math.floor(seconds / 3600); seconds -= hours * 3600;
+  const minutes = Math.floor(seconds / 60); seconds -= minutes * 60;
+  const prefix = hours ? String(hours).padStart(2,'0') + ':' : '';
+  return prefix + String(minutes).padStart(2,'0') + ':' + seconds.toFixed(3).padStart(6,'0');
+}
+function formatSize(bytes) { const u=['B','KB','MB','GB','TB']; let i=0; while(bytes>=1024&&i<u.length-1){bytes/=1024;i++} return `${bytes.toFixed(i?1:0)} ${u[i]}`; }
+async function api(url, options={}) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+function visibleVideos() {
+  const q=$('search').value.trim().toLowerCase();
+  return state.videos.filter(v => (!q || v.relative.toLowerCase().includes(q)) && (!state.pendingOnly || !state.reviewed[v.id]) && (!state.longOnly || v.duration>8.5));
+}
+function renderList() {
+  const items=visibleVideos();
+  $('videoList').innerHTML=items.map(v=>`<div class="video-item ${state.current?.id===v.id?'active':''}" data-id="${v.id}">
+    <div class="video-name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div>
+    <div class="video-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>
+    ${(state.selections[v.id]?.length||0)?`<span class="badge ok">已选 ${state.selections[v.id].length}</span>`:''}
+    ${state.noFall[v.id]?'<span class="badge ok">全程无跌倒</span>':''}
+    ${state.reviewed[v.id]?'<span class="badge ok">已审核</span>':'<span class="badge">待审核</span>'}
+    ${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`).join('') || '<div class="notice" style="padding:15px">没有符合条件的视频</div>';
+  document.querySelectorAll('.video-item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
+  const chosen=Object.values(state.selections).reduce((n,a)=>n+a.length,0);
+  const reviewed=Object.values(state.reviewed).filter(Boolean).length;
+  const noFall=Object.values(state.noFall).filter(Boolean).length;
+  $('summary').textContent=`共 ${state.videos.length} 个；已审核 ${reviewed}；已选 ${chosen} 段；无跌倒 ${noFall} 个`;
+}
+function escapeHtml(value){ const d=document.createElement('div'); d.textContent=value; return d.innerHTML; }
+function floorKeyframe(value) {
+  if (!$('snapKeyframe').checked || !state.keyframes.length) return value;
+  let lo=0, hi=state.keyframes.length;
+  while(lo<hi){const mid=(lo+hi)>>1;if(state.keyframes[mid]<=value+1e-6)lo=mid+1;else hi=mid}
+  return state.keyframes[Math.max(0,lo-1)];
+}
+function maxStart(){ return Math.max(0,(state.current?.duration||0)-8); }
+function updateOverview(){
+  const duration=state.current?.duration||0;
+  if(!duration)return;
+  const start=Number($('clipStart').value)||0;
+  $('windowBar').style.left=`${Math.min(100,start/duration*100)}%`;
+  $('windowBar').style.width=`${Math.min(100,8/duration*100)}%`;
+  $('playhead').style.left=`${Math.min(100,Math.max(0,player.currentTime/duration*100))}%`;
+}
+function renderSavedMarkers(){
+  const duration=state.current?.duration||0;
+  const list=state.current ? (state.selections[state.current.id]||[]) : [];
+  $('savedMarkers').innerHTML=duration ? list.map((clip,i)=>`<button class="saved-marker" data-marker="${i}" style="left:${Math.min(100,clip.start/duration*100)}%;width:${Math.min(100,8/duration*100)}%" title="已提交 ${formatTime(clip.start)} → ${formatTime(clip.start+8)}；点击预览"></button>`).join('') : '';
+  document.querySelectorAll('[data-marker]').forEach(el=>el.onclick=event=>{
+    event.stopPropagation();
+    const clip=list[Number(el.dataset.marker)];
+    setClipStart(clip.start); previewSelection();
+  });
+}
+function setClipStart(value, doSnap=false) {
+  value=Math.min(maxStart(),Math.max(0,Number(value)||0));
+  if(doSnap) value=floorKeyframe(value);
+  $('clipStart').value=value;
+  $('selectionRange').textContent=`${formatTime(value)} → ${formatTime(value+8)}`;
+  updateOverview();
+}
+function stopLooping(pause=false) {
+  state.looping=false;
+  $('preview').textContent='循环预览这 8 秒 (W)';
+  if(pause) player.pause();
+}
+function seekToSelection(immediate=true) {
+  if(!state.current)return;
+  stopLooping(true);
+  const seek=()=>{
+    state.syncingFromSelection=true;
+    player.currentTime=Number($('clipStart').value);
+  };
+  clearTimeout(sliderSeekTimer);
+  if(immediate) seek(); else sliderSeekTimer=setTimeout(seek,80);
+}
+function setFromPlayer(centered) {
+  if(!state.current)return;
+  stopLooping(false);
+  setClipStart(player.currentTime-(centered?4:0),true);
+}
+async function selectVideo(id) {
+  const video=state.videos.find(v=>v.id===id); if(!video)return;
+  stopLooping(true); state.current=video; state.keyframes=[];
+  $('empty').classList.add('hidden'); $('workspace').classList.remove('hidden');
+  if(window.innerWidth<=700){document.body.classList.add('sidebar-hidden');$('toggleSidebar').textContent='显示列表'}
+  $('currentName').textContent=video.name; $('currentPath').textContent=video.relative;
+  $('clipStart').max=maxStart(); $('durationLabel').textContent=`总时长 ${formatTime(video.duration)}`;
+  setClipStart(0); renderList(); renderClips(); updateStatusButtons();
+  player.src=`/media/${encodeURIComponent(id)}`; player.playbackRate=Number($('speed').value); player.load();
+  $('keyframeNotice').textContent='正在读取关键帧（长视频首次读取可能需要一些时间）…';
+  try {
+    const data=await api(`/api/keyframes?id=${encodeURIComponent(id)}`);
+    if(state.current?.id!==id)return;
+    state.keyframes=data.keyframes;
+    $('keyframeNotice').textContent=`已读取 ${data.keyframes.length} 个关键帧。拖动结束或添加片段时会向前吸附，保证不重新编码。`;
+  } catch(error) { $('keyframeNotice').textContent=`关键帧读取失败：${error.message}`; $('keyframeNotice').className='notice warn'; }
+}
+function renderClips() {
+  const list=state.current ? (state.selections[state.current.id]||[]) : [];
+  $('clipRows').innerHTML=list.length ? list.map((clip,i)=>`<tr><td>${i+1}</td><td>${formatTime(clip.start)} → ${formatTime(clip.start+8)}</td><td>${escapeHtml(clip.label)}</td><td><button data-preview="${i}">预览</button> <button class="danger" data-remove="${i}">删除</button></td></tr>`).join('') : '<tr><td colspan="4" class="notice">尚未选择片段</td></tr>';
+  document.querySelectorAll('[data-preview]').forEach(el=>el.onclick=()=>{const c=list[Number(el.dataset.preview)];setClipStart(c.start);previewSelection()});
+  document.querySelectorAll('[data-remove]').forEach(el=>el.onclick=async()=>{list.splice(Number(el.dataset.remove),1);await persistCurrent();renderClips();renderList()});
+  renderSavedMarkers();
+}
+async function persistCurrent() {
+  if(!state.current)return;
+  $('saveStatus').textContent='保存中…';
+  try { await api('/api/video-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:state.current.id,selections:state.selections[state.current.id]||[],reviewed:!!state.reviewed[state.current.id],noFall:!!state.noFall[state.current.id]})}); $('saveStatus').textContent='选择已保存，尚未导出'; }
+  catch(error){$('saveStatus').textContent=`保存失败：${error.message}`; throw error;}
+}
+async function addClip() {
+  if(!state.current)return;
+  let start=floorKeyframe(Number($('clipStart').value)); setClipStart(start);
+  const list=state.selections[state.current.id]||(state.selections[state.current.id]=[]);
+  if(list.some(c=>start<c.start+8-0.001 && c.start<start+8-0.001)){alert('该 8 秒窗口与已有片段重叠，请先移动。');return;}
+  const previousNoFall=!!state.noFall[state.current.id];
+  state.noFall[state.current.id]=false;
+  list.push({start,label:$('label').value}); list.sort((a,b)=>a.start-b.start);
+  try{await persistCurrent();renderClips();renderList();updateStatusButtons()}catch{list.splice(list.findIndex(c=>c.start===start),1);state.noFall[state.current.id]=previousNoFall}
+}
+function previewSelection(){
+  if(state.looping){stopLooping(true);return;}
+  state.looping=true; $('preview').textContent='停止循环预览 (W)';
+  state.syncingFromSelection=true; player.currentTime=Number($('clipStart').value); player.play().catch(()=>{});
+}
+function shiftSelection(delta){setClipStart(Number($('clipStart').value)+delta,false);seekToSelection(true)}
+function seekPlayer(delta){
+  if(!state.current)return;
+  stopLooping(true);
+  const target=Math.min(Number.isFinite(player.duration)?player.duration:state.current.duration,Math.max(0,player.currentTime+delta));
+  state.syncingFromSelection=true;
+  setClipStart(target,false);
+  player.currentTime=target;
+}
+function moveVideo(delta){const list=visibleVideos();const i=list.findIndex(v=>v.id===state.current?.id);if(list.length)selectVideo(list[Math.min(list.length-1,Math.max(0,i+delta))].id)}
+function updateStatusButtons(){
+  const id=state.current?.id;
+  $('toggleReviewed').textContent=state.reviewed[id]?'取消“已审核”':'标记已审核';
+  $('markNoFall').textContent=state.noFall[id]?'取消“全程无跌倒”':'全程无跌倒';
+  $('markNoFall').classList.toggle('primary',!!state.noFall[id]);
+}
+async function toggleReviewed(goNext=false){
+  if(!state.current)return;
+  const currentId=state.current.id, list=visibleVideos(), index=list.findIndex(v=>v.id===currentId);
+  const nextId=list[index+1]?.id;
+  state.reviewed[currentId]=goNext?true:!state.reviewed[currentId];
+  await persistCurrent(); updateStatusButtons(); renderList();
+  if((goNext||(state.pendingOnly&&state.reviewed[currentId]))&&nextId)selectVideo(nextId);
+}
+async function completeAndNext(){
+  if(!state.current)return;
+  const currentId=state.current.id, videos=visibleVideos(), index=videos.findIndex(v=>v.id===currentId);
+  const nextId=videos[index+1]?.id;
+  const clips=state.selections[currentId]||[];
+  state.reviewed[currentId]=true;
+  if(clips.length===0){
+    state.noFall[currentId]=true;
+    $('saveStatus').textContent='未选片段：标记为全程无跌倒…';
+  }else{
+    state.noFall[currentId]=false;
+    $('saveStatus').textContent=`完成：已提交 ${clips.length} 段…`;
+  }
+  await persistCurrent();
+  renderClips(); renderList(); updateStatusButtons();
+  if(nextId)selectVideo(nextId);
+}
+async function toggleNoFall(){
+  if(!state.current)return;
+  const currentId=state.current.id, videos=visibleVideos(), index=videos.findIndex(v=>v.id===currentId);
+  const nextId=videos[index+1]?.id;
+  const enabling=!state.noFall[currentId];
+  const previousClips=[...(state.selections[currentId]||[])];
+  if(enabling && previousClips.length && !confirm(`该视频已有 ${previousClips.length} 个片段。标记全程无跌倒会删除这些选择，是否继续？`))return;
+  state.noFall[currentId]=enabling;
+  if(enabling){state.selections[currentId]=[];state.reviewed[currentId]=true}
+  try{
+    await persistCurrent(); renderClips(); renderList(); updateStatusButtons();
+    if(enabling&&nextId)selectVideo(nextId);
+  }catch(error){
+    state.noFall[currentId]=!enabling; state.selections[currentId]=previousClips;
+    renderClips(); renderList(); updateStatusButtons();
+  }
+}
+
+async function init(){
+  const data=await api('/api/videos'); $('sourcePath').textContent=`源：${data.source}\n片段：${data.output}\n无跌倒：${data.noFallOutput}`;
+  state.videos=data.videos;
+  for(const v of data.videos){state.selections[v.id]=[];state.reviewed[v.id]=v.reviewed;state.noFall[v.id]=v.noFall}
+  // Public video data already carries counts, while full selections are restored lazily below.
+  const saved=await fetch('/api/export-status'); await saved.json();
+  // The server state is intentionally requested through per-video data embedded below.
+  const stateResponse=await fetch('/api/state');
+  if(stateResponse.ok){const persisted=await stateResponse.json();state.selections=persisted.selections||state.selections;state.reviewed=persisted.reviewed||state.reviewed;state.noFall=persisted.noFall||state.noFall}
+  renderList();
+  const first=state.videos.find(v=>v.duration>8.5&&!state.reviewed[v.id])||visibleVideos()[0];
+  if(first)selectVideo(first.id);
+  pollExport();
+}
+
+$('search').oninput=renderList;
+$('onlyPending').onclick=()=>{state.pendingOnly=!state.pendingOnly;$('onlyPending').textContent=state.pendingOnly?'显示全部':'仅未审核';renderList()};
+$('onlyLong').onclick=()=>{state.longOnly=!state.longOnly;$('onlyLong').textContent=state.longOnly?'显示全部时长':'只看长视频';renderList()};
+$('clipStart').oninput=()=>{setClipStart($('clipStart').value,false);seekToSelection(false)};
+$('clipStart').onchange=()=>{setClipStart($('clipStart').value,true);seekToSelection(true)};
+$('snapKeyframe').onchange=()=>setClipStart($('clipStart').value,true);
+$('setStart').onclick=()=>setFromPlayer(false);
+$('setCenter').onclick=()=>setFromPlayer(true);
+$('preview').onclick=previewSelection;
+$('jumpSelection').onclick=()=>seekToSelection(true);
+$('overview').onclick=event=>{
+  if(!state.current)return;
+  const rect=$('overview').getBoundingClientRect();
+  const fraction=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+  stopLooping(false); state.syncingFromSelection=false;
+  player.currentTime=fraction*state.current.duration;
+  if($('followPlayer').checked)setClipStart(player.currentTime-4,false);
+};
+$('speed').onchange=()=>player.playbackRate=Number($('speed').value);
+document.querySelectorAll('[data-shift]').forEach(el=>el.onclick=()=>shiftSelection(Number(el.dataset.shift)));
+$('addClip').onclick=addClip;
+$('markNoFall').onclick=toggleNoFall;
+$('previous').onclick=()=>moveVideo(-1); $('next').onclick=()=>moveVideo(1);
+$('toggleReviewed').onclick=()=>toggleReviewed(false);
+$('toggleSidebar').onclick=()=>{document.body.classList.toggle('sidebar-hidden');$('toggleSidebar').textContent=document.body.classList.contains('sidebar-hidden')?'显示列表':'隐藏列表'};
+$('help').onclick=()=>$('helpDialog').showModal();
+player.ontimeupdate=()=>{
+  $('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
+  const start=Number($('clipStart').value);
+  if(state.looping && player.currentTime>=start+8-0.03){player.currentTime=start;player.play().catch(()=>{})}
+  else if(!state.looping&&!player.paused&&$('followPlayer').checked)setClipStart(player.currentTime-4,false);
+  updateOverview();
+};
+player.onseeked=()=>{
+  if(state.syncingFromSelection){state.syncingFromSelection=false;return;}
+  if(!state.looping&&$('followPlayer').checked)setClipStart(player.currentTime-4,false);
+};
+player.onpause=()=>{if(state.looping&&player.currentTime<Number($('clipStart').value)+7.9)stopLooping(false)};
+$('makeProxy').onclick=async()=>{
+  if(!state.current)return; const id=state.current.id; $('makeProxy').disabled=true; $('keyframeNotice').textContent='正在后台生成兼容预览；最终导出仍使用原视频…';
+  try{await api('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    const timer=setInterval(async()=>{const s=await api(`/api/proxy-status?id=${id}`);if(s.status==='ready'){clearInterval(timer);if(state.current?.id===id){player.src=s.url;player.load();$('keyframeNotice').textContent=s.message||'兼容预览已生成'}$('makeProxy').disabled=false}else if(s.status==='error'){clearInterval(timer);alert(s.message);$('makeProxy').disabled=false}},1500);
+  }catch(error){alert(error.message);$('makeProxy').disabled=false}
+};
+$('exportAll').onclick=async()=>{if(!confirm('确认开始导出？8 秒片段会无损写入源目录下的 output；全程无跌倒视频会原样复制到 no_fall_output。已有同名文件时会停止，不会覆盖。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
+async function pollExport(){try{const s=await api('/api/export-status');$('exportStatus').textContent=s.message||'';$('exportStatus').className=`status ${s.status==='error'?'error':s.status==='done'?'done':''}`;$('exportAll').disabled=s.status==='running';if(s.status==='running')setTimeout(pollExport,1000)}catch{setTimeout(pollExport,2000)}}
+$('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});state.videos=data.videos;for(const v of data.videos){if(!(v.id in state.selections))state.selections[v.id]=[];if(!(v.id in state.reviewed))state.reviewed[v.id]=v.reviewed;if(!(v.id in state.noFall))state.noFall[v.id]=v.noFall}renderList()}catch(error){alert(error.message)}};
+document.addEventListener('keydown',event=>{
+  if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;
+  const key=event.key.toLowerCase();
+  if(event.code==='Space'){event.preventDefault();runShortcut(addClip)}
+  else if(event.key==='ArrowLeft'){event.preventDefault();seekPlayer(event.shiftKey?-0.1:-1)}
+  else if(event.key==='ArrowRight'){event.preventDefault();seekPlayer(event.shiftKey?0.1:1)}
+  else if(key==='j')seekPlayer(-5); else if(key==='l')seekPlayer(5);
+  else if(key==='a')shiftSelection(-5); else if(key==='d')shiftSelection(5);
+  else if(key==='s'){event.preventDefault();player.paused?player.play():player.pause()}
+  else if(key==='c')setFromPlayer(true); else if(key==='w')previewSelection();
+  else if(event.key==='Enter'){event.preventDefault();runShortcut(completeAndNext)}
+  else if(event.key==='[')moveVideo(-1); else if(event.key===']')moveVideo(1);
+});
+init().catch(error=>{$('empty').textContent=`启动失败：${error.message}`});
+</script>
+</body>
+</html>
