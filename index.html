@@ -136,6 +136,7 @@
       <button id="exportAll" class="primary">导出已提交结果</button>
       <button id="rescan">重新扫描目录</button>
       <button id="help">快捷键与说明</button>
+      <button id="quitTool">退出工具</button>
       <div id="exportStatus" class="status"></div>
     </div>
   </aside>
@@ -480,6 +481,7 @@ $('makeProxy').onclick=async()=>{
 $('exportAll').onclick=async()=>{if(!confirm('确认开始导出？8 秒片段会无损写入源目录下的 output；全程无跌倒视频会原样复制到 no_fall_output。已有同名文件时会停止，不会覆盖。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
 async function pollExport(){try{const s=await api('/api/export-status');$('exportStatus').textContent=s.message||'';$('exportStatus').className=`status ${s.status==='error'?'error':s.status==='done'?'done':''}`;$('exportAll').disabled=s.status==='running';if(s.status==='running')setTimeout(pollExport,1000)}catch{setTimeout(pollExport,2000)}}
 $('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});state.videos=data.videos;for(const v of data.videos){if(!(v.id in state.selections))state.selections[v.id]=[];if(!(v.id in state.reviewed))state.reviewed[v.id]=v.reviewed;if(!(v.id in state.noFall))state.noFall[v.id]=v.noFall}renderList()}catch(error){alert(error.message)}};
+$('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？已提交的审核进度不会丢失。'))return;try{await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<div class="empty">工具已安全退出，可以关闭此页面。</div>'}catch(error){alert(error.message)}};
 document.addEventListener('keydown',event=>{
   if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;
   const key=event.key.toLowerCase();

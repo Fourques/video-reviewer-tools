@@ -76,6 +76,7 @@
       <div id="summary" class="path"></div>
       <button id="exportFall" class="fall-button">导出所有 Fall 原视频</button>
       <button id="rescan">重新扫描项目目录</button>
+      <button id="quitTool">退出工具</button>
       <div id="exportStatus" class="status">尚未导出</div>
     </div>
   </aside>
@@ -148,6 +149,7 @@ $('makeProxy').onclick=async()=>{if(!state.current)return;const id=state.current
 $('exportFall').onclick=async()=>{if(!confirm('确认将所有标记为 Fall 的完整原视频原样复制到 fall_output？已有同名且内容一致的文件会跳过，不会覆盖不同内容。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
 async function pollExport(){try{const result=await api('/api/export-status');$('exportStatus').textContent=result.message||'';$('exportStatus').className=`status ${result.status==='error'?'error':result.status==='done'?'done':''}`;$('exportFall').disabled=result.status==='running';if(result.status==='running')setTimeout(pollExport,1000)}catch{setTimeout(pollExport,2000)}}
 $('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});state.videos=data.videos;renderList()}catch(error){alert(error.message)}};
+$('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？已保存的标签不会丢失。'))return;try{await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<div id="empty">工具已安全退出，可以关闭此页面。</div>'}catch(error){alert(error.message)}};
 document.addEventListener('keydown',event=>{if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;const key=event.key.toLowerCase();if(key==='s'){event.preventDefault();player.paused?player.play():player.pause()}else if(event.code==='Space'||key==='f'){event.preventDefault();saveLabel('fall')}else if(event.key==='Enter'||key==='n'){event.preventDefault();saveLabel('no_fall')}else if(event.key==='ArrowLeft'){event.preventDefault();seek(-1)}else if(event.key==='ArrowRight'){event.preventDefault();seek(1)}else if(key==='a'||key==='j')seek(-5);else if(key==='d'||key==='l')seek(5);else if(key==='w'){event.preventDefault();toggleLoop()}else if(event.key==='[')moveVideo(-1);else if(event.key===']')moveVideo(1);else if(event.key==='Backspace'){event.preventDefault();clearLabel()}});
 init().catch(error=>{$('empty').textContent=`启动失败：${error.message}`});
 </script>

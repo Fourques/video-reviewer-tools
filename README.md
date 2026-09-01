@@ -7,25 +7,24 @@
 
 Windows、macOS、Linux 和远程 Linux 服务器使用同一套响应式网页界面。视频不会上传到互联网。两个模式都只读取项目目录第一层的视频，不扫描子目录。
 
-## 环境要求
+## 推荐：下载免安装版
 
-- Python 3.10 或更高版本。
-- FFmpeg 和 FFprobe，并已加入系统 `PATH`。
-- Chrome、Edge、Safari 或 Firefox 等现代浏览器。
+GitHub Releases 提供四个自包含版本：
 
-可先在终端检查：
+- `VideoReviewer-Windows-x64.zip`
+- `VideoReviewer-macOS-AppleSilicon.zip`
+- `VideoReviewer-macOS-Intel.zip`
+- `VideoReviewer-Linux-x64.tar.gz`
 
-```text
-python3 --version
-ffmpeg -version
-ffprobe -version
-```
+这些版本已经内置 Python、FFmpeg 和全部网页资源，不需要安装 Python、FFmpeg，也不需要填写配置文件。解压后双击 `VideoReviewer.exe`、`VideoReviewer.app` 或 `VideoReviewer` 即可。
 
-Windows 也可以使用 `py -3 --version` 检查 Python。
+应用会打开默认浏览器显示项目中心。停止时点击页面中的“退出工具”，不要只关闭浏览器标签页。
 
-## 启动
+未购买代码签名证书的构建属于未签名软件：Windows 首次运行可能显示 SmartScreen 提醒；macOS 首次运行可能需要按住 Control 点击应用并选择“打开”。后续可直接双击。完全消除这些系统提醒需要 Windows 代码签名证书和 Apple Developer ID 公证凭据。
 
-下载 Release 压缩包并完整解压，不要直接在压缩包中运行。
+## 源码版启动
+
+只有开发或远程服务器不适合使用免安装版时才需要源码版。源码版要求 Python 3.10+ 和 FFmpeg；不再需要单独安装 FFprobe。
 
 Windows 双击 `start_windows.bat`，或在 PowerShell 中运行：
 
@@ -52,7 +51,7 @@ python3 start.py
 3. 使用自动生成的输出目录，或自行修改。
 4. 点击“开始审核”。页面会等待视频扫描完成并自动进入审核界面。
 
-端口 8765 被占用时，工具会自动尝试后续空闲端口。按 `Ctrl+C` 停止工具；审核进度已经实时写入磁盘。
+端口 8765 被占用时，工具会自动尝试后续空闲端口。源码版可按 `Ctrl+C` 停止；免安装版可点击“退出工具”。审核进度会实时写入磁盘。
 
 ## 输出与进度
 
@@ -98,7 +97,7 @@ python3 start.py
 
 ### VS Code Remote SSH
 
-在 VS Code 中打开本项目目录，然后在远程终端运行：
+Linux 免安装版可直接在远程终端运行 `./VideoReviewer`。使用源码版时，在 VS Code 中打开本项目目录，然后运行：
 
 ```bash
 ./start_remote.sh

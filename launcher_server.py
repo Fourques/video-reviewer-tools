@@ -162,7 +162,12 @@ class LauncherHandler(BaseHTTPRequestHandler):
         self._json({"error": "Not Found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlparse(self.path).path != "/api/start":
+        route = urlparse(self.path).path
+        if route == "/api/quit":
+            self._json({"ok": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        if route != "/api/start":
             self._json({"error": "Not Found"}, HTTPStatus.NOT_FOUND)
             return
         try:

@@ -9,7 +9,6 @@ import hashlib
 import json
 import mimetypes
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -23,7 +22,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from reviewer import VIDEO_EXTENSIONS, copy_file_bytes, ffprobe_duration, run_command, safe_json_write
+from reviewer import (
+    VIDEO_EXTENSIONS, copy_file_bytes, ffmpeg_executable, ffprobe_duration,
+    run_command, safe_json_write, user_cache_dir,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -329,6 +331,9 @@ class LabelHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "videos": self.server.app.public_videos()})
             elif parsed.path == "/api/proxy":
                 self.send_json(self.server.app.start_proxy(str(data.get("id", ""))))
+            elif parsed.path == "/api/shutdown":
+                self.send_json({"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
@@ -404,7 +409,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="快速标记整段 Fall 视频并原样导出")
     parser.add_argument("--source", required=True, help="项目目录（只扫描当前目录第一层）")
     parser.add_argument("--output", help="Fall 视频输出目录；默认是项目目录/fall_output")
-    parser.add_argument("--cache", default=str(APP_DIR / ".label_preview_cache"), help="兼容预览缓存")
+    parser.add_argument("--cache", default=str(user_cache_dir("label-preview")), help="兼容预览缓存")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true")
@@ -413,8 +418,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        print("错误：PATH 中找不到 ffmpeg 或 ffprobe", file=sys.stderr)
+    try:
+        ffmpeg_executable()
+    except RuntimeError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
         return 2
     source = Path(args.source).expanduser()
     if not source.is_dir():

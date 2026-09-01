@@ -1,0 +1,84 @@
+name: Build self-contained apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: VideoReviewer-Windows-x64
+            kind: windows
+          - os: ubuntu-22.04
+            artifact: VideoReviewer-Linux-x64
+            kind: linux
+          - os: macos-15
+            artifact: VideoReviewer-macOS-AppleSilicon
+            kind: mac
+          - os: macos-15-intel
+            artifact: VideoReviewer-macOS-Intel
+            kind: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Syntax checks
+        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
+      - name: Verify bundled FFmpeg and startup (Windows)
+        if: matrix.kind == 'windows'
+        shell: pwsh
+        run: |
+          $env:VIDEO_REVIEWER_TEST_MODE = "1"
+          & "dist/VideoReviewer/VideoReviewer.exe" --self-test
+      - name: Verify bundled FFmpeg and startup (Linux)
+        if: matrix.kind == 'linux'
+        run: VIDEO_REVIEWER_TEST_MODE=1 ./dist/VideoReviewer/VideoReviewer --self-test
+      - name: Verify bundled FFmpeg and startup (macOS)
+        if: matrix.kind == 'mac'
+        run: VIDEO_REVIEWER_TEST_MODE=1 ./dist/VideoReviewer.app/Contents/MacOS/VideoReviewer --self-test
+      - name: Package Windows
+        if: matrix.kind == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/VideoReviewer -DestinationPath "${{ matrix.artifact }}.zip"
+      - name: Package Linux
+        if: matrix.kind == 'linux'
+        run: tar -C dist -czf "${{ matrix.artifact }}.tar.gz" VideoReviewer
+      - name: Package macOS
+        if: matrix.kind == 'mac'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/VideoReviewer.app "${{ matrix.artifact }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release-files/* --repo "${GITHUB_REPOSITORY}" --generate-notes

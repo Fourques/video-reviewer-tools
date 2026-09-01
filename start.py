@@ -345,11 +345,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机；局域网共享可用 0.0.0.0")
     parser.add_argument("--port", type=int, help="网页端口；不提供时从 8765 开始自动选择空闲端口")
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.self_test:
+        required = ["launcher.html", "index.html", "quick_label.html"]
+        missing = [name for name in required if not Path(__file__).with_name(name).is_file()]
+        if missing:
+            print(f"自检失败：缺少资源文件：{', '.join(missing)}", file=sys.stderr)
+            return 2
+        try:
+            result = reviewer.run_command(["ffmpeg", "-version"], timeout=30)
+        except (OSError, RuntimeError) as exc:
+            print(f"自检失败：{exc}", file=sys.stderr)
+            return 2
+        if result.returncode != 0:
+            print(f"自检失败：内置 FFmpeg 无法运行：{result.stderr}", file=sys.stderr)
+            return 2
+        print("自检通过：页面资源和内置 FFmpeg 均可用。")
+        return 0
     if args.port is None:
         args.port = choose_port(args.host)
         if args.port != 8765:

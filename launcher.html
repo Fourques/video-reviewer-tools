@@ -44,7 +44,7 @@
   </section>
 
   <div class="actions">
-    <div><button id="defaults" class="secondary">恢复默认输出</button></div>
+    <div class="row"><button id="defaults" class="secondary">恢复默认输出</button><button id="quitTool" class="secondary">退出工具</button></div>
     <div id="status" class="status"></div>
     <button id="start" class="primary">开始审核</button>
   </div>
@@ -77,6 +77,7 @@ $('recent').onchange=event=>{if(event.target.value)applyProject(event.target.val
 $('source').onblur=()=>{const value=$('source').value.trim();if(value&&value!==loadedSource)applyProject(value)};
 for(const radio of document.querySelectorAll('input[name=mode]'))radio.onchange=showMode;
 $('defaults').onclick=()=>{const source=$('source').value.trim();if(source)applyProject(source,false)};
+$('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？'))return;try{await api('/api/quit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<main class="page"><section class="card"><h2>工具已退出</h2><p class="hint">现在可以关闭此页面。</p></section></main>'}catch(error){setStatus(error.message,'error')}};
 $('browse').onclick=()=>{$('modal').classList.add('show');loadFolder($('source').value.trim()||config.home||config.cwd)};
 $('closeModal').onclick=()=>$('modal').classList.remove('show');
 $('goFolder').onclick=()=>loadFolder($('folderPath').value);

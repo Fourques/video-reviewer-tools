@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local browser-based reviewer for lossless 8-second video clipping.
 
-Only Python's standard library is required. FFmpeg and FFprobe must be on PATH.
+Source runs use system FFmpeg when available; packaged runs include FFmpeg.
 Final clips are always created with stream copy (-c copy); optional browser proxies
 are review-only and are never used as an export source.
 """
@@ -14,6 +14,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,9 +37,53 @@ VIDEO_EXTENSIONS = {
 }
 APP_DIR = Path(__file__).resolve().parent
 INDEX_FILE = APP_DIR / "index.html"
+_FFMPEG_EXECUTABLE: str | None = None
+
+
+def user_cache_dir(name: str) -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "VideoReviewer" / name
+
+
+def ffmpeg_executable() -> str:
+    global _FFMPEG_EXECUTABLE
+    if _FFMPEG_EXECUTABLE:
+        return _FFMPEG_EXECUTABLE
+    forced = os.environ.get("VIDEO_REVIEWER_FFMPEG")
+    if forced and Path(forced).is_file():
+        _FFMPEG_EXECUTABLE = forced
+        return forced
+
+    # Frozen releases must prefer their bundled binary and remain independent
+    # of whatever happens to be installed on the user's machine.
+    if getattr(sys, "frozen", False):
+        try:
+            from imageio_ffmpeg import get_ffmpeg_exe
+            _FFMPEG_EXECUTABLE = get_ffmpeg_exe()
+            return _FFMPEG_EXECUTABLE
+        except (ImportError, RuntimeError) as exc:
+            raise RuntimeError("安装包中缺少内置 FFmpeg") from exc
+
+    system = shutil.which("ffmpeg")
+    if system:
+        _FFMPEG_EXECUTABLE = system
+        return system
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        _FFMPEG_EXECUTABLE = get_ffmpeg_exe()
+        return _FFMPEG_EXECUTABLE
+    except (ImportError, RuntimeError) as exc:
+        raise RuntimeError("找不到 FFmpeg；源码版请安装 FFmpeg，或安装 imageio-ffmpeg") from exc
 
 
 def run_command(args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    if args and args[0] == "ffmpeg":
+        args = [ffmpeg_executable(), *args[1:]]
     return subprocess.run(
         args,
         stdin=subprocess.DEVNULL,
@@ -51,32 +96,31 @@ def run_command(args: list[str], timeout: float | None = None) -> subprocess.Com
 
 
 def ffprobe_duration(path: Path) -> float:
+    """Read container duration using FFmpeg so packaged builds need one binary."""
     result = run_command([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        "ffmpeg", "-hide_banner", "-nostdin", "-i", str(path),
     ], timeout=60)
-    if result.returncode != 0:
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
+    if not match:
         return 0.0
-    try:
-        return max(0.0, float(result.stdout.strip()))
-    except ValueError:
-        return 0.0
+    hours, minutes, seconds = match.groups()
+    return max(0.0, int(hours) * 3600 + int(minutes) * 60 + float(seconds))
 
 
 def ffprobe_keyframes(path: Path) -> list[float]:
-    # Ask the decoder to emit only key frames, avoiding a huge packet listing for
-    # hour-long files while retaining accurate presentation timestamps.
+    # Decode only keyframes and obtain their presentation timestamps from
+    # showinfo. This avoids shipping a separate ffprobe executable.
     result = run_command([
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-skip_frame", "nokey", "-show_entries", "frame=best_effort_timestamp_time",
-        "-of", "csv=p=0", str(path),
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-nostdin",
+        "-skip_frame", "nokey", "-i", str(path), "-map", "0:v:0",
+        "-vf", "showinfo", "-an", "-sn", "-f", "null", "-",
     ], timeout=3600)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "FFprobe 无法读取关键帧")
+        raise RuntimeError(result.stderr.strip()[-1000:] or "FFmpeg 无法读取关键帧")
     keyframes: list[float] = []
-    for line in result.stdout.splitlines():
+    for match in re.finditer(r"pts_time:\s*(-?\d+(?:\.\d+)?)", result.stderr):
         try:
-            value = float(line.strip().split(",", 1)[0])
+            value = float(match.group(1))
         except ValueError:
             continue
         if value >= 0:
@@ -618,6 +662,9 @@ class ReviewHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/rescan":
                 self.server.app.scan()
                 self.send_json({"ok": True, "videos": self.server.app.public_videos()})
+            elif parsed.path == "/api/shutdown":
+                self.send_json({"ok": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
@@ -703,7 +750,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", required=True, help="待审核视频目录（只扫描当前目录第一层）")
     parser.add_argument("--output", help="8 秒片段的扁平输出目录；默认是源目录/output")
     parser.add_argument("--no-fall-output", help="全程无跌倒原视频输出目录；默认是源目录/no_fall_output")
-    parser.add_argument("--cache", default=str(APP_DIR / ".preview_cache"), help="浏览器兼容预览缓存目录")
+    parser.add_argument("--cache", default=str(user_cache_dir("clip-preview")), help="浏览器兼容预览缓存目录")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认只允许本机访问")
     parser.add_argument("--port", type=int, default=8765, help="监听端口")
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
@@ -712,8 +759,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        print("错误：PATH 中找不到 ffmpeg 或 ffprobe", file=sys.stderr)
+    try:
+        ffmpeg_executable()
+    except RuntimeError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
         return 2
     source = Path(args.source).expanduser()
     if not source.is_dir():
