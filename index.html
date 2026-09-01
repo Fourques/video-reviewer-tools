@@ -245,7 +245,7 @@ async function api(url, options={}) {
 }
 function visibleVideos() {
   const q=$('search').value.trim().toLowerCase();
-  return state.videos.filter(v => (!q || v.relative.toLowerCase().includes(q)) && (!state.pendingOnly || !state.reviewed[v.id]) && (!state.longOnly || v.duration>8.5));
+  return state.videos.filter(v => v.id===state.current?.id || ((!q || v.relative.toLowerCase().includes(q)) && (!state.pendingOnly || !state.reviewed[v.id]) && (!state.longOnly || v.duration>8.5)));
 }
 function renderList() {
   const items=visibleVideos();
@@ -257,6 +257,7 @@ function renderList() {
     ${state.reviewed[v.id]?'<span class="badge ok">已审核</span>':'<span class="badge">待审核</span>'}
     ${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`).join('') || '<div class="notice" style="padding:15px">没有符合条件的视频</div>';
   document.querySelectorAll('.video-item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
+  requestAnimationFrame(()=>document.querySelector('.video-item.active')?.scrollIntoView({block:'nearest'}));
   const chosen=Object.values(state.selections).reduce((n,a)=>n+a.length,0);
   const reviewed=Object.values(state.reviewed).filter(Boolean).length;
   const noFall=Object.values(state.noFall).filter(Boolean).length;

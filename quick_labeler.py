@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import hashlib
 import json
 import mimetypes
@@ -62,15 +63,22 @@ class Video:
 
 
 class LabelApp:
-    def __init__(self, source: Path, output: Path, cache: Path) -> None:
+    def __init__(self, source: Path, output: Path, no_fall_output: Path, caregiver_output: Path, cache: Path) -> None:
         self.source = source.expanduser().resolve()
         self.output = output.expanduser().resolve()
+        self.no_fall_output = no_fall_output.expanduser().resolve()
+        self.caregiver_output = caregiver_output.expanduser().resolve()
         self.cache = cache.expanduser().resolve()
         if not self.source.is_dir():
             raise ValueError(f"源目录不存在：{self.source}")
-        if self.source == self.output:
-            raise ValueError("Fall 输出目录不能与项目目录相同")
+        outputs = {self.output, self.no_fall_output, self.caregiver_output}
+        if self.source in outputs:
+            raise ValueError("归档目录不能与项目目录相同")
+        if len(outputs) != 3:
+            raise ValueError("跌倒、不跌倒与护工 Fall 归档目录必须互不相同")
         self.output.mkdir(parents=True, exist_ok=True)
+        self.no_fall_output.mkdir(parents=True, exist_ok=True)
+        self.caregiver_output.mkdir(parents=True, exist_ok=True)
         self.cache.mkdir(parents=True, exist_ok=True)
         self.state_file = self.output / ".fall_label_state.json"
         self.lock = threading.RLock()
@@ -78,7 +86,7 @@ class LabelApp:
         self.videos: list[Video] = []
         self.video_by_id: dict[str, Video] = {}
         self.proxy_jobs: dict[str, dict[str, Any]] = {}
-        self.export_job: dict[str, Any] = {"status": "idle", "message": "尚未导出"}
+        self.export_job: dict[str, Any] = {"status": "idle", "message": "尚未归档"}
         self.scan()
 
     def _load_state(self) -> dict[str, Any]:
@@ -101,7 +109,7 @@ class LabelApp:
     def scan(self) -> None:
         paths: list[Path] = []
         for path in self.source.iterdir():
-            if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
             resolved = path.resolve()
             if self.output in resolved.parents or self.cache in resolved.parents:
@@ -137,8 +145,8 @@ class LabelApp:
 
     def set_label(self, video_id: str, label: str | None) -> None:
         self.get_video(video_id)
-        if label not in {"fall", "no_fall", None}:
-            raise ValueError("标签只能是 fall、no_fall 或空")
+        if label not in {"fall", "no_fall", "caregiver_fall", None}:
+            raise ValueError("标签只能是 fall、no_fall、caregiver_fall 或空")
         with self.lock:
             if label is None:
                 self.state["labels"].pop(video_id, None)
@@ -182,7 +190,7 @@ class LabelApp:
                 temporary.replace(destination)
                 self.proxy_jobs[video_id] = {
                     "status": "ready", "url": f"/proxy/{quote(video_id)}",
-                    "message": "兼容预览已生成；导出仍复制原视频",
+                    "message": "兼容预览已生成；归档仍移动原视频且不转码",
                 }
             else:
                 temporary.unlink(missing_ok=True)
@@ -195,69 +203,100 @@ class LabelApp:
             if self.export_job.get("status") == "running":
                 return dict(self.export_job)
             self.export_job = {"status": "running", "done": 0, "total": 0, "message": "正在检查…"}
-        threading.Thread(target=self._export_fall, daemon=True).start()
+        threading.Thread(target=self._archive_labeled, daemon=True).start()
         return dict(self.export_job)
 
-    def _export_fall(self) -> None:
+    def _move_original(self, video: Video, destination: Path) -> None:
+        if destination.exists():
+            if destination.stat().st_size != video.size or sha256_file(destination) != sha256_file(video.path):
+                raise RuntimeError(f"已有同名文件但内容不同，未覆盖：{video.name}")
+            video.path.unlink()
+            return
         try:
-            fall_videos = [video for video in self.videos if self.state["labels"].get(video.id) == "fall"]
-            if not fall_videos:
-                raise ValueError("还没有标记任何 Fall 视频")
-            names: dict[str, list[str]] = {}
-            for video in fall_videos:
-                names.setdefault(video.name.casefold(), []).append(video.relative)
-            duplicates = {name: paths for name, paths in names.items() if len(paths) > 1}
-            if duplicates:
-                detail = "; ".join(f"{name}: {', '.join(paths)}" for name, paths in duplicates.items())
-                raise ValueError(f"Fall 输出目录存在同名冲突：{detail}")
+            video.path.replace(destination)
+            return
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+        temporary = destination.parent / f".{video.name}.archive-{os.getpid()}-{time.time_ns()}.tmp"
+        try:
+            copy_file_bytes(video.path, temporary)
+            if temporary.stat().st_size != video.size or sha256_file(temporary) != sha256_file(video.path):
+                raise RuntimeError(f"跨磁盘移动校验失败：{video.name}")
+            temporary.replace(destination)
+            video.path.unlink()
+        finally:
+            temporary.unlink(missing_ok=True)
 
-            total = len(fall_videos)
-            rows: list[dict[str, Any]] = []
+    def _archive_labeled(self) -> None:
+        destinations = {
+            "fall": (self.output, "fall_export.csv", "跌倒"),
+            "no_fall": (self.no_fall_output, "no_fall_label_export.csv", "不跌倒"),
+            "caregiver_fall": (self.caregiver_output, "caregiver_fall_export.csv", "护工 Fall"),
+        }
+        try:
+            plan = [
+                (video, self.state["labels"].get(video.id))
+                for video in self.videos
+                if self.state["labels"].get(video.id) in destinations
+            ]
+            if not plan:
+                raise ValueError("还没有已标记的视频可归档")
+            total = len(plan)
+            rows: dict[str, list[dict[str, Any]]] = {label: [] for label in destinations}
             failures: list[str] = []
             with self.lock:
-                self.export_job.update(total=total, message=f"准备复制 {total} 个 Fall 原视频")
-            for index, video in enumerate(fall_videos, start=1):
-                destination = self.output / video.name
+                self.export_job.update(total=total, message=f"准备归档 {total} 个已标记原视频")
+            for index, (video, label) in enumerate(plan, start=1):
+                output, _csv_name, display = destinations[label]
+                destination = output / video.name
                 with self.lock:
-                    self.export_job["message"] = f"正在复制 {index}/{total}：{video.name}"
+                    self.export_job["message"] = f"正在移动 {index}/{total}（{display}）：{video.name}"
                 try:
-                    if destination.exists():
-                        if destination.stat().st_size != video.size or sha256_file(destination) != sha256_file(video.path):
-                            raise RuntimeError(f"已有同名文件但内容不同，未覆盖：{video.name}")
-                    else:
-                        temporary = self.output / f".{video.name}.fall-label-{os.getpid()}-{time.time_ns()}.tmp"
-                        try:
-                            copy_file_bytes(video.path, temporary)
-                            temporary.replace(destination)
-                        finally:
-                            temporary.unlink(missing_ok=True)
-                    rows.append({
-                        "source": str(video.path), "relative_source": video.relative,
-                        "duration": f"{video.duration:.6f}", "label": "fall", "output": video.name,
+                    source_path = str(video.path)
+                    self._move_original(video, destination)
+                    rows[label].append({
+                        "source": source_path, "relative_source": video.relative,
+                        "duration": f"{video.duration:.6f}",
+                        "label": label, "output": video.name,
                     })
                 except Exception as exc:
                     failures.append(f"{video.name}：{exc}")
                 with self.lock:
                     self.export_job["done"] = index
 
-            if rows:
-                csv_path = self.output / "fall_export.csv"
-                temporary_csv = csv_path.with_suffix(".csv.tmp")
-                with temporary_csv.open("w", encoding="utf-8-sig", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-                    writer.writeheader()
-                    writer.writerows(rows)
-                temporary_csv.replace(csv_path)
+            self.scan()
+            for label, category_rows in rows.items():
+                if not category_rows:
+                    continue
+                try:
+                    output, csv_name, display = destinations[label]
+                    csv_path = output / csv_name
+                    merged: dict[str, dict[str, Any]] = {}
+                    if csv_path.exists():
+                        with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                            merged.update({row["output"]: row for row in csv.DictReader(handle) if row.get("output")})
+                    merged.update({row["output"]: row for row in category_rows})
+                    all_rows = list(merged.values())
+                    temporary_csv = csv_path.with_suffix(".csv.tmp")
+                    with temporary_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=list(category_rows[0]))
+                        writer.writeheader()
+                        writer.writerows(all_rows)
+                    temporary_csv.replace(csv_path)
+                except (OSError, csv.Error, KeyError, ValueError) as exc:
+                    failures.append(f"{display}清单写入失败：{exc}")
+            succeeded = sum(len(items) for items in rows.values())
             with self.lock:
                 if failures:
                     self.export_job.update(
                         status="error", done=total, total=total,
-                        message=f"部分完成：成功 {len(rows)} 个，失败 {len(failures)} 个。\n" + "\n".join(failures[:10]),
+                        message=f"部分完成：成功移动 {succeeded} 个，失败 {len(failures)} 个；失败视频仍留在原目录。\n" + "\n".join(failures[:10]),
                     )
                 else:
                     self.export_job.update(
                         status="done", done=total, total=total,
-                        message=f"完成：已原样复制 {len(rows)} 个 Fall 视频到 {self.output}",
+                        message=f"完成：已将 {succeeded} 个已标记原视频移动到三个分类目录；未标记视频仍在原目录。",
                     )
         except Exception as exc:
             with self.lock:
@@ -296,6 +335,8 @@ class LabelHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/videos":
                 self.send_json({
                     "source": str(self.server.app.source), "output": str(self.server.app.output),
+                    "noFallOutput": str(self.server.app.no_fall_output),
+                    "caregiverOutput": str(self.server.app.caregiver_output),
                     "videos": self.server.app.public_videos(),
                 })
             elif parsed.path == "/api/state":
@@ -409,6 +450,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="快速标记整段 Fall 视频并原样导出")
     parser.add_argument("--source", required=True, help="项目目录（只扫描当前目录第一层）")
     parser.add_argument("--output", help="Fall 视频输出目录；默认是项目目录/fall_output")
+    parser.add_argument("--no-fall-output", help="不跌倒视频输出目录；默认是项目目录/no_fall_output")
+    parser.add_argument("--caregiver-output", help="护工 Fall 视频输出目录；默认是项目目录/caregiver_fall_output")
     parser.add_argument("--cache", default=str(user_cache_dir("label-preview")), help="兼容预览缓存")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -428,13 +471,17 @@ def main() -> int:
         print(f"错误：项目目录不存在：{source}", file=sys.stderr)
         return 2
     output = Path(args.output).expanduser() if args.output else source / "fall_output"
+    no_fall_output = Path(args.no_fall_output).expanduser() if args.no_fall_output else source / "no_fall_output"
+    caregiver_output = Path(args.caregiver_output).expanduser() if args.caregiver_output else source / "caregiver_fall_output"
     print(f"正在扫描项目目录：{source.resolve()}", flush=True)
-    app = LabelApp(source, output, Path(args.cache))
+    app = LabelApp(source, output, no_fall_output, caregiver_output, Path(args.cache))
     server = LabelServer((args.host, args.port), app)
     url = f"http://{args.host}:{args.port}"
     print(f"已找到 {len(app.videos)} 个视频")
     print(f"项目目录：{app.source}")
     print(f"Fall 输出目录：{app.output}")
+    print(f"不跌倒输出目录：{app.no_fall_output}")
+    print(f"护工 Fall 输出目录：{app.caregiver_output}")
     print(f"审核页面：{url}")
     print("按 Ctrl+C 停止工具")
     if not args.no_browser and not os.environ.get("SSH_CONNECTION"):

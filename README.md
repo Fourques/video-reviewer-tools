@@ -3,7 +3,7 @@
 一个本地运行、浏览器操作的视频人工审核工具，支持两种相互独立的工作流：
 
 - 固定 8 秒片段审核：为每个长视频选择一段或多段 8 秒画面，或标记整段无跌倒。
-- 整段 Fall 快速分类：浏览完整视频，把人工判定为 Fall 的原视频导出。
+- 整段快速分类：浏览完整视频，标记“跌倒 / 不跌倒 / 护工 Fall”，再把已标记原视频移动到三个分类目录；未标记视频保留为未处理或困难样本。
 
 Windows、macOS、Linux 和远程 Linux 服务器使用同一套响应式网页界面。视频不会上传到互联网。两个模式都只读取项目目录第一层的视频，不扫描子目录。
 
@@ -60,13 +60,14 @@ python3 start.py
 ```text
 项目目录/
 ├── output/              # 8 秒片段、clips.csv 和片段审核进度
-├── no_fall_output/      # 整段无跌倒原视频和 no_fall.csv
-└── fall_output/         # 整段 Fall 原视频、fall_export.csv 和快速分类进度
+├── no_fall_output/      # 不跌倒原视频及分类清单
+├── fall_output/         # 整段跌倒原视频、fall_export.csv 和快速分类进度
+└── caregiver_fall_output/ # 护工 Fall 原视频和 caregiver_fall_export.csv
 ```
 
 - 单段片段保持原文件名；同一视频多段时添加 `_0001`、`_0002`。
 - 最终 8 秒片段使用 FFmpeg `-c copy`，不重新编码、不降低画质。
-- 整段 Fall/无跌倒视频按原始字节复制，不转码。
+- 快速分类归档直接移动原视频，不转码、不改变文件名；跨磁盘移动会先逐字节复制并校验，再删除原文件。
 - 工具不会覆盖内容不同的同名文件。
 - 片段审核进度：`output/.clip_reviewer_state.json`。
 - 快速分类进度：`fall_output/.fall_label_state.json`。
@@ -84,14 +85,17 @@ python3 start.py
 - `Space`：提交当前片段。
 - `Enter`：完成并进入下一个；没有片段时标记整段无跌倒。
 
-整段 Fall 分类：
+整段 Fall 分类（页面中可修改标签快捷键和 A/D 跳转秒数，设置会保存在当前浏览器）：
 
 - `S`：播放/暂停。
-- `←` / `→`：前后 1 秒；`A` / `D`：前后 5 秒。
+- `←` / `→`：前后 1 秒；`A` / `D`：按自定义秒数前后跳转，默认 5 秒。
 - `W`：循环播放。
-- `Space`：标记 Fall 并进入下一个。
-- `Enter`：标记非 Fall 并进入下一个。
+- `J`：标记跌倒并进入下一个。
+- `K`：标记不跌倒并进入下一个。
+- `L`：标记护工 Fall 并进入下一个。
 - `Backspace`：撤销当前标签。
+
+点击“归档全部已标记视频”后，跌倒、不跌倒、护工 Fall 会分别移动到 `fall_output`、`no_fall_output`、`caregiver_fall_output`。未标记的视频留在项目原目录，作为未处理或困难样本。旧版本已有的 `fall/no_fall` 进度无需转换，新版本会继续读取。
 
 ## 远程服务器
 
@@ -145,7 +149,9 @@ python3 start.py --source "/视频目录" --mode clip \
 直接启动整段 Fall 分类：
 
 ```bash
-python3 start.py --source "/视频目录" --mode label --fall-output "/Fall输出"
+python3 start.py --source "/视频目录" --mode label \
+  --fall-output "/跌倒输出" --no-fall-output "/不跌倒输出" \
+  --caregiver-fall-output "/护工Fall输出"
 ```
 
 完整参数：

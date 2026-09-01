@@ -27,7 +27,7 @@
     <h2>2. 选择审核功能</h2>
     <div class="modes">
       <label class="mode"><input type="radio" name="mode" value="clip" checked><strong>固定 8 秒片段审核</strong><span>选择一段或多段 8 秒视频，也可判定整段无跌倒</span></label>
-      <label class="mode"><input type="radio" name="mode" value="label"><strong>整段 Fall 快速分类</strong><span>浏览完整视频，将人工判定为 Fall 的原视频导出</span></label>
+      <label class="mode"><input type="radio" name="mode" value="label"><strong>整段 Fall 快速分类</strong><span>标记三类并移动归档，未标记视频留在原目录</span></label>
     </div>
   </section>
 
@@ -39,8 +39,10 @@
     </div>
     <div id="labelOutputs" hidden>
       <label class="field"><span>Fall 原视频</span><input id="fallOutput"></label>
+      <label class="field"><span>不跌倒原视频</span><input id="labelNoFallOutput"></label>
+      <label class="field"><span>护工 Fall 原视频</span><input id="caregiverFallOutput"></label>
     </div>
-    <p class="hint">新项目会自动使用项目目录下的 output、no_fall_output 或 fall_output；这里可以直接修改。</p>
+    <p class="hint">新项目会自动使用项目目录下的 output、no_fall_output、fall_output 或 caregiver_fall_output；这里可以直接修改。</p>
   </section>
 
   <div class="actions">
@@ -67,8 +69,8 @@ const $=id=>document.getElementById(id);let config={},loadedSource='',currentFol
 function mode(){return document.querySelector('input[name=mode]:checked').value}
 function join(base,name){const sep=base.includes('\\')?'\\':'/';return base.replace(/[\\/]$/,'')+sep+name}
 function setStatus(text,type=''){const el=$('status');el.textContent=text;el.className='status '+type}
-function defaults(source){return{output:join(source,'output'),no_fall_output:join(source,'no_fall_output'),fall_output:join(source,'fall_output')}}
-function applyProject(source,useSaved=true){source=source.trim();if(!source)return;$('source').value=source;loadedSource=source;const saved=useSaved?(config.projects?.[source]||{}):{};const d=defaults(source);$('output').value=saved.output||d.output;$('noFallOutput').value=saved.no_fall_output||d.no_fall_output;$('fallOutput').value=saved.fall_output||d.fall_output;if(saved.mode){const radio=document.querySelector(`input[name=mode][value="${saved.mode}"]`);if(radio)radio.checked=true}showMode()}
+function defaults(source){return{output:join(source,'output'),no_fall_output:join(source,'no_fall_output'),fall_output:join(source,'fall_output'),caregiver_fall_output:join(source,'caregiver_fall_output')}}
+function applyProject(source,useSaved=true){source=source.trim();if(!source)return;$('source').value=source;loadedSource=source;const saved=useSaved?(config.projects?.[source]||{}):{};const d=defaults(source);$('output').value=saved.output||d.output;$('noFallOutput').value=saved.no_fall_output||d.no_fall_output;$('labelNoFallOutput').value=saved.no_fall_output||d.no_fall_output;$('fallOutput').value=saved.fall_output||d.fall_output;$('caregiverFallOutput').value=saved.caregiver_fall_output||d.caregiver_fall_output;if(saved.mode){const radio=document.querySelector(`input[name=mode][value="${saved.mode}"]`);if(radio)radio.checked=true}showMode()}
 function showMode(){const label=mode()==='label';$('clipOutputs').hidden=label;$('labelOutputs').hidden=!label}
 async function api(url,options){const response=await fetch(url,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.error||`请求失败 ${response.status}`);return data}
 async function loadFolder(path){try{const data=await api('/api/directories?'+new URLSearchParams({path}));currentFolder=data.path;$('folderPath').value=data.path;const list=$('folderList');list.textContent='';if(data.parent){const b=document.createElement('button');b.className='folder';b.textContent='..  上一级';b.onclick=()=>loadFolder(data.parent);list.appendChild(b)}for(const item of data.directories){const b=document.createElement('button');b.className='folder';b.textContent=item.name;b.title=item.path;b.onclick=()=>loadFolder(item.path);list.appendChild(b)}if(!data.parent&&!data.directories.length)list.innerHTML='<div class="empty">没有可进入的子目录</div>';if(data.truncated)list.insertAdjacentHTML('beforeend','<div class="empty">目录过多，只显示前 1000 个</div>')}catch(error){setStatus(error.message,'error')}}
@@ -84,7 +86,7 @@ $('goFolder').onclick=()=>loadFolder($('folderPath').value);
 $('folderPath').onkeydown=event=>{if(event.key==='Enter')loadFolder(event.target.value)};
 $('selectFolder').onclick=()=>{applyProject(currentFolder);$('modal').classList.remove('show')};
 $('modal').onclick=event=>{if(event.target===$('modal'))$('modal').classList.remove('show')};
-$('start').onclick=async()=>{let source=$('source').value.trim();if(!source){setStatus('请先选择项目目录','error');return}if(source!==loadedSource)applyProject(source);const payload={source,mode:mode(),output:$('output').value,no_fall_output:$('noFallOutput').value,fall_output:$('fallOutput').value};$('start').disabled=true;try{const data=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});setStatus(data.message,'good');waitForReviewer()}catch(error){$('start').disabled=false;setStatus(error.message,'error')}};
+$('start').onclick=async()=>{let source=$('source').value.trim();if(!source){setStatus('请先选择项目目录','error');return}if(source!==loadedSource)applyProject(source);const payload={source,mode:mode(),output:$('output').value,no_fall_output:mode()==='label'?$('labelNoFallOutput').value:$('noFallOutput').value,fall_output:$('fallOutput').value,caregiver_fall_output:$('caregiverFallOutput').value};$('start').disabled=true;try{const data=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});setStatus(data.message,'good');waitForReviewer()}catch(error){$('start').disabled=false;setStatus(error.message,'error')}};
 async function waitForReviewer(){for(;;){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/api/videos',{cache:'no-store'});if(response.ok){location.replace('/?project_started='+Date.now());return}}catch{}}}
 init().catch(error=>setStatus(error.message,'error'));
 </script>

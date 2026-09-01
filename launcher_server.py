@@ -102,15 +102,19 @@ class LauncherApp:
         output = output_path("output", "output")
         no_fall_output = output_path("no_fall_output", "no_fall_output")
         fall_output = output_path("fall_output", "fall_output")
-        active = [fall_output] if mode == "label" else [output, no_fall_output]
+        caregiver_fall_output = output_path("caregiver_fall_output", "caregiver_fall_output")
+        active = [fall_output, no_fall_output, caregiver_fall_output] if mode == "label" else [output, no_fall_output]
         if source in active:
             raise ValueError("输出目录不能与项目目录完全相同")
         if mode == "clip" and output == no_fall_output:
             raise ValueError("片段与无跌倒输出目录不能相同")
+        if mode == "label" and len({fall_output, no_fall_output, caregiver_fall_output}) != 3:
+            raise ValueError("跌倒、不跌倒与护工 Fall 输出目录必须互不相同")
         return {
             "source": str(source), "mode": mode,
             "output": str(output), "no_fall_output": str(no_fall_output),
             "fall_output": str(fall_output),
+            "caregiver_fall_output": str(caregiver_fall_output),
         }
 
 
