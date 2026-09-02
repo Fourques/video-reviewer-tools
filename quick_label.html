@@ -20,7 +20,15 @@
     .app { display:grid; grid-template-columns:minmax(260px,330px) minmax(0,1fr); width:100%; height:100dvh; }
     aside { min-width:0; min-height:0; display:flex; flex-direction:column; border-right:1px solid var(--line); background:#14171d; }
     .side-head { padding:14px; border-bottom:1px solid var(--line); }
-    h1 { margin:0 0 7px; font-size:18px; }
+    .side-title-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    h1 { margin:0; font-size:18px; }
+    .compact-button { flex:none; padding:4px 8px; color:var(--muted); font-size:12px; }
+    #sideTools { margin-top:7px; }
+    .side-head.tools-collapsed { padding-bottom:10px; }
+    .side-head.tools-collapsed #sideTools { display:none; }
+    .path-details { margin-bottom:7px; color:var(--muted); font-size:12px; }
+    .path-details summary { width:max-content; cursor:pointer; color:#b5c1d1; }
+    .path-details .path { margin-top:5px; }
     .path,.meta,.status { color:var(--muted); font-size:12px; word-break:break-all; white-space:pre-wrap; }
     .filters { display:flex; gap:7px; flex-wrap:wrap; margin-top:10px; }
     .filters input { flex:1 0 100%; min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
@@ -44,6 +52,9 @@
     .badge.caregiver { color:var(--caregiver); }
     .badge.warn { color:#ffd075; }
     .side-foot { display:grid; gap:8px; padding:12px; border-top:1px solid var(--line); }
+    .side-foot-head { display:flex; align-items:flex-start; justify-content:space-between; gap:7px; }
+    .side-foot-head #summary { flex:1; }
+    .side-actions { display:grid; gap:8px; }
     main { min-width:0; min-height:0; height:100dvh; padding:13px 17px; overflow:hidden; }
     #empty { height:90%; display:grid; place-items:center; color:var(--muted); font-size:16px; }
     .hidden { display:none!important; }
@@ -85,39 +96,43 @@
 <body>
 <div class="app">
   <aside>
-    <div class="side-head">
-      <h1>Fall 整段快速分类</h1>
-      <div id="paths" class="path"></div>
-      <div class="filters">
-        <input id="search" placeholder="在当前列表内搜索文件名">
-        <button id="pendingOnly">显示全部</button>
-        <button id="fallOnly">仅看跌倒</button>
-        <button id="caregiverOnly">仅看护工 Fall</button>
-      </div>
-      <div class="device-tools">
-        <div class="device-query">
-          <input id="deviceSearch" list="deviceSuggestions" autocomplete="off" placeholder="粘贴设备 ID，回车查询">
-          <datalist id="deviceSuggestions"></datalist>
-          <button id="searchDevice">查设备</button>
-          <button id="clearDevice" disabled>清除</button>
+    <div id="sideHead" class="side-head">
+      <div class="side-title-row"><h1>Fall 整段快速分类</h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div id="sideTools">
+        <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
+        <div class="filters">
+          <input id="search" placeholder="在当前列表内搜索文件名">
+          <button id="pendingOnly">显示全部</button>
+          <button id="fallOnly">仅看跌倒</button>
+          <button id="caregiverOnly">仅看护工 Fall</button>
         </div>
-        <div id="deviceStatus" class="device-status">正在分析设备字段…</div>
-        <div class="device-actions">
-          <button id="currentDevice">当前设备</button>
-          <button id="previousDevice">上一设备</button>
-          <button id="nextDevice">下一设备</button>
-          <button id="deviceRule">识别规则</button>
+        <div class="device-tools">
+          <div class="device-query">
+            <input id="deviceSearch" list="deviceSuggestions" autocomplete="off" placeholder="粘贴设备 ID，回车查询">
+            <datalist id="deviceSuggestions"></datalist>
+            <button id="searchDevice">查设备</button>
+            <button id="clearDevice" disabled>清除</button>
+          </div>
+          <div id="deviceStatus" class="device-status">正在分析设备字段…</div>
+          <div class="device-actions">
+            <button id="currentDevice">当前设备</button>
+            <button id="previousDevice">上一设备</button>
+            <button id="nextDevice">下一设备</button>
+            <button id="deviceRule">识别规则</button>
+          </div>
+          <button id="deviceSort">按设备分组排序</button>
         </div>
-        <button id="deviceSort">按设备分组排序</button>
       </div>
     </div>
     <div id="videoList" class="list"></div>
     <div class="side-foot">
-      <div id="summary" class="path"></div>
-      <button id="exportAll" class="fall-button">整理全部分类修改</button>
-      <button id="rescan">重新扫描四个目录</button>
-      <button id="quitTool">退出工具</button>
-      <div id="exportStatus" class="status">尚未归档；未标记视频会保留在原目录</div>
+      <div class="side-foot-head"><div id="summary" class="path"></div><button id="toggleSideActions" class="compact-button">展开操作</button></div>
+      <div id="sideActions" class="side-actions hidden">
+        <button id="exportAll" class="fall-button">整理全部分类修改</button>
+        <button id="rescan">重新扫描四个目录</button>
+        <button id="quitTool">退出工具</button>
+        <div id="exportStatus" class="status">尚未归档；未标记视频会保留在原目录</div>
+      </div>
     </div>
   </aside>
   <main>
@@ -200,8 +215,10 @@ function displayKey(key){return({arrowleft:'←',arrowright:'→',arrowup:'↑',
 function loadPreferences(){try{const saved=JSON.parse(localStorage.getItem(PREFERENCES_KEY)||'{}');const seconds=Math.min(600,Math.max(.1,Number(saved.seekSeconds)||5));const shortcuts={...DEFAULT_PREFERENCES.shortcuts,...(saved.shortcuts||{})};const normalized=Object.fromEntries(Object.entries(shortcuts).map(([name,key])=>[name,normalizeKey(key)]));const values=Object.values(normalized);if(values.some(key=>!key)||new Set(values).size!==values.length)throw new Error('invalid');return{seekSeconds:seconds,shortcuts:normalized}}catch{return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES))}}
 const DEVICE_SETTINGS_PREFIX='videoReviewer.quickLabel.device.v1:';
 const DEFAULT_DEVICE_RULE={mode:'auto',delimiter:'_',fieldIndex:2,regex:''};
+const LAYOUT_KEY='videoReviewer.quickLabel.layout.v1';
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences(),source:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map()};
+function loadLayout(){try{return{toolsCollapsed:false,actionsCollapsed:true,...JSON.parse(localStorage.getItem(LAYOUT_KEY)||'{}')}}catch{return{toolsCollapsed:false,actionsCollapsed:true}}}
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences(),layout:loadLayout(),source:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map()};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
@@ -212,6 +229,8 @@ function loadDeviceSettings(){
   try{const saved=JSON.parse(localStorage.getItem(DEVICE_SETTINGS_PREFIX+state.source)||'{}');state.deviceRule={...DEFAULT_DEVICE_RULE,...(saved.rule||{})};state.learnedDeviceIds=Array.isArray(saved.learnedDeviceIds)?saved.learnedDeviceIds.filter(Boolean).slice(0,2000):[]}catch{state.deviceRule={...DEFAULT_DEVICE_RULE};state.learnedDeviceIds=[]}
 }
 function saveDeviceSettings(){try{localStorage.setItem(DEVICE_SETTINGS_PREFIX+state.source,JSON.stringify({rule:state.deviceRule,learnedDeviceIds:state.learnedDeviceIds}))}catch{}}
+function renderLayout(){const layout=state.layout;$('sideHead').classList.toggle('tools-collapsed',layout.toolsCollapsed);$('toggleSideTools').textContent=layout.toolsCollapsed?'展开筛选与设备':'收起工具区';$('sideActions').classList.toggle('hidden',layout.actionsCollapsed);$('toggleSideActions').textContent=layout.actionsCollapsed?'展开操作':'收起操作'}
+function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(state.layout))}catch{}}
 function inferAutoDeviceField(videos){
   const candidates=[];
   // Hyphens commonly occur inside UUIDs, so automatic column inference only uses
@@ -317,7 +336,9 @@ function saveRuleFromDialog(){
   const mode=$('deviceRuleMode').value,delimiter=$('deviceDelimiter').value,fieldIndex=Math.max(1,Number($('deviceFieldIndex').value)||1),regex=$('deviceRegex').value.trim();if(mode==='field'&&!delimiter){alert('字段分隔符不能为空');return}if(mode==='regex'&&regex){try{new RegExp(regex)}catch(error){alert(`正则表达式无效：${error.message}`);return}}
   state.deviceRule={mode,delimiter,fieldIndex,regex};saveDeviceSettings();applyDeviceIds();if(state.deviceQuery)state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===state.deviceQuery.toLowerCase());renderList();renderDeviceRulePreview();$('deviceDialog').close()
 }
-async function init(){renderPreferences();const data=await api('/api/videos');state.source=data.source;loadDeviceSettings();adoptVideos(data.videos);$('paths').textContent=`联合复核：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}`;const saved=await api('/api/state');state.labels=saved.labels||state.labels;renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
+async function init(){renderPreferences();renderLayout();const data=await api('/api/videos');state.source=data.source;loadDeviceSettings();adoptVideos(data.videos);$('paths').textContent=`联合复核：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}`;const saved=await api('/api/state');state.labels=saved.labels||state.labels;if(state.videos.length&&state.videos.every(video=>state.labels[video.id]))setAllLabelFilters();renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
+$('toggleSideTools').onclick=()=>{state.layout.toolsCollapsed=!state.layout.toolsCollapsed;saveLayout();renderLayout()};
+$('toggleSideActions').onclick=()=>{state.layout.actionsCollapsed=!state.layout.actionsCollapsed;saveLayout();renderLayout()};
 $('search').oninput=renderList;
 $('deviceSearch').oninput=updateDeviceUi;$('deviceSearch').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();applyDeviceQuery()}};$('searchDevice').onclick=()=>applyDeviceQuery();$('clearDevice').onclick=clearDeviceQuery;
 $('currentDevice').onclick=()=>{if(state.current?.deviceId){$('deviceSearch').value=state.current.deviceId;applyDeviceQuery(state.current.deviceId)}};$('previousDevice').onclick=()=>moveDevice(-1);$('nextDevice').onclick=()=>moveDevice(1);
