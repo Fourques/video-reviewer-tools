@@ -50,6 +50,7 @@ class Video:
     size: int
     duration: float
     origin_label: str | None
+    metadata_device_id: str
 
     def public(self, label: str | None, duplicate_name: bool) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class Video:
             "duration": self.duration,
             "label": label,
             "originLabel": self.origin_label,
+            "metadataDeviceId": self.metadata_device_id,
             "duplicateName": duplicate_name,
         }
 
@@ -83,11 +85,51 @@ class LabelApp:
         self.state_file = self._state_file_for_source()
         self.lock = threading.RLock()
         self.state = self._load_state()
+        self.metadata_csv: Path | None = None
+        self.device_by_filename: dict[str, str] = {}
+        self.metadata_conflicts: set[str] = set()
         self.videos: list[Video] = []
         self.video_by_id: dict[str, Video] = {}
         self.proxy_jobs: dict[str, dict[str, Any]] = {}
         self.export_job: dict[str, Any] = {"status": "idle", "message": "尚未归档"}
         self.scan()
+
+    def _load_device_metadata(self) -> None:
+        self.metadata_csv = None
+        self.device_by_filename = {}
+        self.metadata_conflicts = set()
+        search_dirs = [self.source, *list(self.source.parents)[:8]]
+        for directory in search_dirs:
+            candidate = directory / "candidates.csv"
+            if not candidate.is_file():
+                continue
+            try:
+                with candidate.open(encoding="utf-8-sig", newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    if not reader.fieldnames or not {"file", "device_id"}.issubset(reader.fieldnames):
+                        continue
+                    mapping: dict[str, str] = {}
+                    conflicts: set[str] = set()
+                    for row in reader:
+                        raw_file = str(row.get("file", "")).strip()
+                        device_id = str(row.get("device_id", "")).strip()
+                        if not raw_file or not device_id:
+                            continue
+                        filename = raw_file.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+                        previous = mapping.get(filename)
+                        if previous is not None and previous != device_id:
+                            conflicts.add(filename)
+                        else:
+                            mapping[filename] = device_id
+                    for filename in conflicts:
+                        mapping.pop(filename, None)
+            except (OSError, csv.Error, UnicodeError):
+                continue
+            if mapping:
+                self.metadata_csv = candidate.resolve()
+                self.device_by_filename = mapping
+                self.metadata_conflicts = conflicts
+                return
 
     def _state_file_for_source(self) -> Path:
         primary = self.output / ".fall_label_state.json"
@@ -119,6 +161,7 @@ class LabelApp:
             safe_json_write(self.state_file, self.state)
 
     def scan(self) -> None:
+        self._load_device_metadata()
         categories = [
             (self.output, "fall", "跌倒"),
             (self.no_fall_output, "no_fall", "不跌倒"),
@@ -148,6 +191,7 @@ class LabelApp:
             videos.append(Video(
                 identifier, path.resolve(), relative, path.name,
                 path.stat().st_size, duration, origin_label,
+                self.device_by_filename.get(path.name.casefold(), ""),
             ))
         with self.lock:
             self.videos = videos
@@ -380,6 +424,9 @@ class LabelHandler(BaseHTTPRequestHandler):
                     "source": str(self.server.app.source), "output": str(self.server.app.output),
                     "noFallOutput": str(self.server.app.no_fall_output),
                     "caregiverOutput": str(self.server.app.caregiver_output),
+                    "metadataCsv": str(self.server.app.metadata_csv) if self.server.app.metadata_csv else None,
+                    "metadataMatched": sum(bool(video.metadata_device_id) for video in self.server.app.videos),
+                    "metadataConflicts": len(self.server.app.metadata_conflicts),
                     "videos": self.server.app.public_videos(),
                 })
             elif parsed.path == "/api/state":
@@ -412,7 +459,13 @@ class LabelHandler(BaseHTTPRequestHandler):
                 self.send_json(self.server.app.start_export())
             elif parsed.path == "/api/rescan":
                 self.server.app.scan()
-                self.send_json({"ok": True, "videos": self.server.app.public_videos()})
+                self.send_json({
+                    "ok": True,
+                    "metadataCsv": str(self.server.app.metadata_csv) if self.server.app.metadata_csv else None,
+                    "metadataMatched": sum(bool(video.metadata_device_id) for video in self.server.app.videos),
+                    "metadataConflicts": len(self.server.app.metadata_conflicts),
+                    "videos": self.server.app.public_videos(),
+                })
             elif parsed.path == "/api/proxy":
                 self.send_json(self.server.app.start_proxy(str(data.get("id", ""))))
             elif parsed.path == "/api/shutdown":
