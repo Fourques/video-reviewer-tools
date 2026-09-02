@@ -24,12 +24,20 @@
     .path,.meta,.status { color:var(--muted); font-size:12px; word-break:break-all; white-space:pre-wrap; }
     .filters { display:flex; gap:7px; flex-wrap:wrap; margin-top:10px; }
     .filters input { flex:1 0 100%; min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
+    .device-tools { display:grid; gap:6px; margin-top:10px; padding:9px; background:#0f1319; border:1px solid #303744; border-radius:9px; }
+    .device-query { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:6px; }
+    .device-query input { min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
+    .device-actions { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
+    .device-actions button { overflow:hidden; padding:6px 5px; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+    .device-status { min-height:17px; color:var(--muted); font-size:12px; word-break:break-all; }
+    .device-status.active { color:#9fd0ff; }
     .list { flex:1; min-height:80px; overflow:auto; }
     .item { padding:10px 13px; border-bottom:1px solid #272d37; cursor:pointer; }
     .item:hover,.item.active { background:#222934; }
     .item.active { border-left:3px solid var(--accent); padding-left:10px; }
     .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .item-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; color:var(--muted); font-size:12px; }
+    .device-group { position:sticky; top:0; z-index:1; padding:6px 12px; color:#b8c5d8; background:#111923f2; border-bottom:1px solid #334052; font-size:12px; }
     .badge { padding:1px 6px; border-radius:9px; background:#333b49; }
     .badge.fall { color:#ff9ba1; }
     .badge.safe { color:var(--safe); }
@@ -81,17 +89,33 @@
       <h1>Fall 整段快速分类</h1>
       <div id="paths" class="path"></div>
       <div class="filters">
-        <input id="search" placeholder="搜索文件名">
+        <input id="search" placeholder="在当前列表内搜索文件名">
         <button id="pendingOnly">显示全部</button>
         <button id="fallOnly">仅看跌倒</button>
         <button id="caregiverOnly">仅看护工 Fall</button>
+      </div>
+      <div class="device-tools">
+        <div class="device-query">
+          <input id="deviceSearch" list="deviceSuggestions" autocomplete="off" placeholder="粘贴设备 ID，回车查询">
+          <datalist id="deviceSuggestions"></datalist>
+          <button id="searchDevice">查设备</button>
+          <button id="clearDevice" disabled>清除</button>
+        </div>
+        <div id="deviceStatus" class="device-status">正在分析设备字段…</div>
+        <div class="device-actions">
+          <button id="currentDevice">当前设备</button>
+          <button id="previousDevice">上一设备</button>
+          <button id="nextDevice">下一设备</button>
+          <button id="deviceRule">识别规则</button>
+        </div>
+        <button id="deviceSort">按设备分组排序</button>
       </div>
     </div>
     <div id="videoList" class="list"></div>
     <div class="side-foot">
       <div id="summary" class="path"></div>
-      <button id="exportAll" class="fall-button">归档全部已标记视频</button>
-      <button id="rescan">重新扫描项目目录</button>
+      <button id="exportAll" class="fall-button">整理全部分类修改</button>
+      <button id="rescan">重新扫描四个目录</button>
       <button id="quitTool">退出工具</button>
       <div id="exportStatus" class="status">尚未归档；未标记视频会保留在原目录</div>
     </div>
@@ -149,6 +173,20 @@
     <div class="settings-actions"><button id="resetPreferences" type="button">恢复全部默认</button><button value="close">完成</button></div>
   </form>
 </dialog>
+<dialog id="deviceDialog">
+  <form method="dialog" class="settings-card">
+    <div class="settings-head"><h2>设备 ID 识别规则</h2><button value="close">关闭</button></div>
+    <div class="meta">查询始终支持任意文件名文本；这里的规则只影响设备分组、排序和前后设备导航，并按项目单独保存。</div>
+    <div class="settings-grid">
+      <label>识别方式 <select id="deviceRuleMode"><option value="auto">自动分析重复字段</option><option value="field">按分隔字段</option><option value="regex">正则表达式</option></select></label>
+      <label>字段分隔符 <input id="deviceDelimiter" value="_" title="例如下划线 _ 或短横线 -"></label>
+      <label>设备字段序号 <input id="deviceFieldIndex" type="number" min="1" step="1" value="2" title="从 1 开始"></label>
+      <label>正则表达式 <input id="deviceRegex" placeholder="第一个括号为设备 ID"></label>
+    </div>
+    <div id="deviceRulePreview" class="status"></div>
+    <div class="settings-actions"><button id="clearLearnedDevices" type="button">清除查询记录</button><button id="resetDeviceRule" type="button">恢复自动识别</button><button id="saveDeviceRule" type="button">应用规则</button></div>
+  </form>
+</dialog>
 <script>
 const $=id=>document.getElementById(id);
 const player=$('player');
@@ -160,39 +198,131 @@ const SHORTCUT_HINTS={fall:'fallKeyHint',no_fall:'safeKeyHint',caregiver_fall:'c
 function normalizeKey(key){if(key===' ')return'space';return String(key||'').toLowerCase()}
 function displayKey(key){return({arrowleft:'←',arrowright:'→',arrowup:'↑',arrowdown:'↓',backspace:'Backspace',enter:'Enter',space:'Space',delete:'Delete',home:'Home',end:'End',pageup:'PageUp',pagedown:'PageDown'}[key]||key.toUpperCase())}
 function loadPreferences(){try{const saved=JSON.parse(localStorage.getItem(PREFERENCES_KEY)||'{}');const seconds=Math.min(600,Math.max(.1,Number(saved.seekSeconds)||5));const shortcuts={...DEFAULT_PREFERENCES.shortcuts,...(saved.shortcuts||{})};const normalized=Object.fromEntries(Object.entries(shortcuts).map(([name,key])=>[name,normalizeKey(key)]));const values=Object.values(normalized);if(values.some(key=>!key)||new Set(values).size!==values.length)throw new Error('invalid');return{seekSeconds:seconds,shortcuts:normalized}}catch{return JSON.parse(JSON.stringify(DEFAULT_PREFERENCES))}}
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences()};
+const DEVICE_SETTINGS_PREFIX='videoReviewer.quickLabel.device.v1:';
+const DEFAULT_DEVICE_RULE={mode:'auto',delimiter:'_',fieldIndex:2,regex:''};
+const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,preferences:loadPreferences(),source:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map()};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
 async function api(url,options={}){const response=await fetch(url,options);const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
 function labelName(label){return label==='fall'?'跌倒':label==='no_fall'?'不跌倒':label==='caregiver_fall'?'护工 Fall':'待判断'}
-function matchesFilters(v){const q=$('search').value.trim().toLowerCase();return(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||state.labels[v.id]==='fall')&&(!state.caregiverOnly||state.labels[v.id]==='caregiver_fall')}
-function visibleVideos(){return state.videos.filter(v=>v.id===state.current?.id||matchesFilters(v))}
+function filenameStem(name){const dot=name.lastIndexOf('.');return dot>0?name.slice(0,dot):name}
+function loadDeviceSettings(){
+  try{const saved=JSON.parse(localStorage.getItem(DEVICE_SETTINGS_PREFIX+state.source)||'{}');state.deviceRule={...DEFAULT_DEVICE_RULE,...(saved.rule||{})};state.learnedDeviceIds=Array.isArray(saved.learnedDeviceIds)?saved.learnedDeviceIds.filter(Boolean).slice(0,2000):[]}catch{state.deviceRule={...DEFAULT_DEVICE_RULE};state.learnedDeviceIds=[]}
+}
+function saveDeviceSettings(){try{localStorage.setItem(DEVICE_SETTINGS_PREFIX+state.source,JSON.stringify({rule:state.deviceRule,learnedDeviceIds:state.learnedDeviceIds}))}catch{}}
+function inferAutoDeviceField(videos){
+  const candidates=[];
+  for(const delimiter of ['_','-']){
+    const rows=videos.map(v=>filenameStem(v.name).split(delimiter));
+    const width=Math.min(30,Math.max(0,...rows.map(parts=>parts.length)));
+    for(let index=0;index<width;index++){
+      const values=rows.map(parts=>(parts[index]||'').trim()).filter(value=>value.length>=4);
+      if(values.length<Math.max(2,Math.ceil(videos.length*.35)))continue;
+      const counts=new Map();for(const value of values)counts.set(value,(counts.get(value)||0)+1);
+      const unique=counts.size,repeated=values.filter(value=>counts.get(value)>1).length,averageLength=values.reduce((sum,value)=>sum+value.length,0)/values.length;
+      if(unique<2||repeated<2)continue;
+      const categoricalPenalty=unique<=3?2:(unique<=6?0.7:0);
+      const score=(repeated/values.length)*5+Math.min(unique,50)*.12+Math.min(averageLength,30)*.02-categoricalPenalty;
+      candidates.push({delimiter,index,score,coverage:values.length/videos.length,unique,repeated});
+    }
+  }
+  return candidates.sort((a,b)=>b.score-a.score)[0]||null;
+}
+function inferRepeatedDeviceTokens(videos){
+  const ignored=new Set(['carelife','fall','detected','verification','positive','negative','cloud','local','other','video','review','true','false','unknown','camera','event']);
+  const tokens=new Map();for(const video of videos)for(const token of filenameStem(video.name).split('_')){const value=token.trim(),key=value.toLowerCase();if(value.length<4||ignored.has(key))continue;const item=tokens.get(key)||{value,count:0};item.count++;tokens.set(key,item)}
+  return new Map([...tokens].filter(([,item])=>item.count>=2));
+}
+function ruleDeviceId(video,learnedIds){
+  const stem=filenameStem(video.name),learned=learnedIds.find(id=>stem.toLowerCase().includes(id.toLowerCase()));
+  if(learned)return learned;
+  const rule=state.deviceRule;
+  if(rule.mode==='regex'&&rule.regex){try{const match=stem.match(new RegExp(rule.regex,'i'));return String(match?.[1]||match?.[0]||'').trim()}catch{return''}}
+  const field=rule.mode==='field'?{delimiter:rule.delimiter,index:Number(rule.fieldIndex)-1}:state.autoDeviceField;
+  if(rule.mode==='field')return !field?.delimiter||field.index<0?'':String(stem.split(field.delimiter)[field.index]||'').trim();
+  const fieldValue=!field?.delimiter||field.index<0?'':String(stem.split(field.delimiter)[field.index]||'').trim();
+  if(fieldValue&&state.autoDeviceTokens.has(fieldValue.toLowerCase()))return fieldValue;
+  const repeated=stem.split('_').map(value=>state.autoDeviceTokens.get(value.trim().toLowerCase())).filter(Boolean).sort((a,b)=>{const aShape=/\d|[^a-z]/i.test(a.value)?1:0,bShape=/\d|[^a-z]/i.test(b.value)?1:0;return bShape-aShape||b.value.length-a.value.length||a.count-b.count});
+  return repeated[0]?.value||fieldValue;
+}
+function applyDeviceIds(){state.autoDeviceField=inferAutoDeviceField(state.videos);state.autoDeviceTokens=inferRepeatedDeviceTokens(state.videos);const learned=[...state.learnedDeviceIds].sort((a,b)=>b.length-a.length);for(const video of state.videos)video.deviceId=ruleDeviceId(video,learned)}
+function adoptVideos(videos){state.videos=videos;state.labels={};for(const video of videos)if(video.label)state.labels[video.id]=video.label;applyDeviceIds()}
+function deviceEntries(){
+  const counts=new Map();for(const video of state.videos)if(video.deviceId)counts.set(video.deviceId,(counts.get(video.deviceId)||0)+1);
+  return [...counts].map(([id,count])=>({id,count})).sort((a,b)=>collator.compare(a.id,b.id));
+}
+function deviceMatches(v,query=state.deviceQuery,exact=state.deviceExact){const q=query.trim().toLowerCase();if(!q)return true;return exact?v.deviceId?.toLowerCase()===q:v.relative.toLowerCase().includes(q)}
+function matchesFilters(v){const q=$('search').value.trim().toLowerCase();return deviceMatches(v)&&(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||state.labels[v.id]==='fall')&&(!state.caregiverOnly||state.labels[v.id]==='caregiver_fall')}
+function orderedVideos(){if(state.sortMode!=='device')return [...state.videos];return [...state.videos].sort((a,b)=>{const ad=a.deviceId||'\uffff',bd=b.deviceId||'\uffff';return collator.compare(ad,bd)||collator.compare(a.name,b.name)})}
+function visibleVideos(){return orderedVideos().filter(v=>v.id===state.current?.id||matchesFilters(v))}
+function updateDeviceUi(){
+  const entries=deviceEntries(),input=$('deviceSearch').value.trim().toLowerCase(),suggestions=entries.filter(entry=>!input||entry.id.toLowerCase().includes(input)).slice(0,50);
+  $('deviceStatus').classList.remove('error');
+  $('deviceSuggestions').innerHTML=suggestions.map(entry=>`<option value="${escapeHtml(entry.id)}">${entry.count} 个视频</option>`).join('');
+  $('clearDevice').disabled=!state.deviceQuery;$('deviceSort').textContent=state.sortMode==='device'?'恢复文件名排序':'按设备分组排序';
+  for(const id of ['previousDevice','nextDevice'])$(id).disabled=!entries.length;
+  $('currentDevice').disabled=!state.current?.deviceId;
+  if(state.deviceQuery){const matches=state.videos.filter(v=>deviceMatches(v)),done=matches.filter(v=>state.labels[v.id]).length;$('deviceStatus').textContent=`设备查询：${state.deviceQuery} · ${matches.length} 个视频 · 已判断 ${done} · 待判断 ${matches.length-done}`;$('deviceStatus').classList.add('active')}
+  else{const inferred=state.deviceRule.mode==='auto'?(state.autoDeviceField?`自动字段“${state.autoDeviceField.delimiter}”第 ${state.autoDeviceField.index+1} 段`:'自动规则暂未找到重复字段'):state.deviceRule.mode==='field'?`按“${state.deviceRule.delimiter}”第 ${state.deviceRule.fieldIndex} 段`:'按正则表达式';$('deviceStatus').textContent=`识别到 ${entries.length} 个设备 · ${inferred}`;$('deviceStatus').classList.remove('active')}
+}
 function renderList(){
   const videos=visibleVideos();
-  $('videoList').innerHTML=videos.map(v=>`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`).join('')||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
+  let lastDevice=null,html='';const grouped=state.sortMode==='device',deviceCounts=new Map();if(grouped)for(const item of state.videos){const id=item.deviceId||'未识别设备';deviceCounts.set(id,(deviceCounts.get(id)||0)+1)}
+  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
+  $('videoList').innerHTML=html||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
   document.querySelectorAll('.item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
   requestAnimationFrame(()=>document.querySelector('.item.active')?.scrollIntoView({block:'nearest'}));
   const currentLabels=state.videos.map(v=>state.labels[v.id]),fall=currentLabels.filter(v=>v==='fall').length,safe=currentLabels.filter(v=>v==='no_fall').length,caregiver=currentLabels.filter(v=>v==='caregiver_fall').length;
   $('summary').textContent=`共 ${state.videos.length} 个；已判断 ${fall+safe+caregiver}；跌倒 ${fall}；不跌倒 ${safe}；护工 Fall ${caregiver}；待判断 ${state.videos.length-fall-safe-caregiver}`;
+  updateDeviceUi();
 }
 function updateDecision(){const label=state.current?state.labels[state.current.id]:null;$('markFall').classList.toggle('active',label==='fall');$('markSafe').classList.toggle('active',label==='no_fall');$('markCaregiver').classList.toggle('active',label==='caregiver_fall')}
-function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;$('currentPath').textContent=video.relative;player.pause();player.src=`/media/${encodeURIComponent(id)}`;player.playbackRate=Number($('speed').value);player.load();$('saveStatus').textContent=state.labels[id]?`当前标签：${labelName(state.labels[id])}`:'待判断';renderList();updateDecision()}
-function nextIdBeforeLabel(){const currentIndex=state.videos.findIndex(v=>v.id===state.current?.id);const following=state.videos.find((v,index)=>index>currentIndex&&matchesFilters(v));return following?.id||state.videos.find(v=>v.id!==state.current?.id&&matchesFilters(v))?.id}
+function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;$('currentPath').textContent=video.deviceId?`${video.relative}\n设备 ID：${video.deviceId}`:video.relative;player.pause();player.src=`/media/${encodeURIComponent(id)}`;player.playbackRate=Number($('speed').value);player.load();$('saveStatus').textContent=state.labels[id]?`当前标签：${labelName(state.labels[id])}`:'待判断';renderList();updateDecision()}
+function nextIdBeforeLabel(){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id);const following=ordered.find((v,index)=>index>currentIndex&&matchesFilters(v));return following?.id||ordered.find(v=>v.id!==state.current?.id&&matchesFilters(v))?.id}
 function saveLabel(label,goNext=true){
   if(!state.current||state.deciding)return state.saving;state.deciding=true;const id=state.current.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;renderList();updateDecision();
   state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})})).then(()=>{$('saveStatus').textContent=`已保存：${labelName(label)}`;$('saveStatus').className='save done';if(nextId)selectVideo(nextId)}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];renderList();updateDecision();$('saveStatus').textContent=`保存失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'}).finally(()=>{state.deciding=false;for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=false});
   return state.saving;
 }
-function clearLabel(){if(!state.current)return;const id=state.current.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];delete state.labels[id];renderList();updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent='已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;renderList();updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
+function clearLabel(){if(!state.current)return;const id=state.current.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=state.current.originLabel;if(origin)state.labels[id]=origin;else delete state.labels[id];renderList();updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];renderList();updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
 function moveVideo(delta){const list=visibleVideos();if(!list.length)return;const index=list.findIndex(v=>v.id===state.current?.id),target=Math.min(list.length-1,Math.max(0,index+delta));selectVideo(list[target].id)}
 function seek(delta){if(!state.current)return;player.pause();player.currentTime=Math.min(state.current.duration,Math.max(0,player.currentTime+delta))}
 function toggleLoop(){player.loop=!player.loop;$('loopVideo').classList.toggle('active',player.loop);renderPreferences()}
 function savePreferences(){try{localStorage.setItem(PREFERENCES_KEY,JSON.stringify(state.preferences))}catch{}}
 function renderPreferences(){const p=state.preferences;$('seekSeconds').value=p.seekSeconds;for(const [action,id] of Object.entries(SHORTCUT_FIELDS))$(id).value=displayKey(p.shortcuts[action]);for(const [action,id] of Object.entries(SHORTCUT_HINTS))$(id).textContent=displayKey(p.shortcuts[action]);$('seekHint').textContent=`±${p.seekSeconds} 秒`;$('markFall').textContent=`跌倒，并进入下一个（${displayKey(p.shortcuts.fall)}）`;$('markSafe').textContent=`不跌倒，并进入下一个（${displayKey(p.shortcuts.no_fall)}）`;$('markCaregiver').textContent=`护工 Fall，并进入下一个（${displayKey(p.shortcuts.caregiver_fall)}）`;$('playPause').textContent=`播放/暂停（${displayKey(p.shortcuts.play_pause)}）`;$('loopVideo').textContent=`${player.loop?'停止循环':'循环当前视频'}（${displayKey(p.shortcuts.loop)}）`;$('clearLabel').textContent=`撤销当前标签（${displayKey(p.shortcuts.clear_label)}）`;$('previous').textContent=`上一个（${displayKey(p.shortcuts.previous_video)}）`;$('next').textContent=`下一个（${displayKey(p.shortcuts.next_video)}）`}
 function changeShortcut(action,key){key=normalizeKey(key);const blocked=new Set(['','tab','escape','shift','control','alt','meta','capslock','unidentified','dead']);if(blocked.has(key)){alert('这个键用于系统或窗口操作，请换一个键。');renderPreferences();return}const used=Object.entries(state.preferences.shortcuts).find(([name,current])=>name!==action&&current===key);if(used){alert(`${displayKey(key)} 已用于“${ACTION_NAMES[used[0]]}”，请换一个键。`);renderPreferences();return}state.preferences.shortcuts[action]=key;savePreferences();renderPreferences()}
-async function init(){renderPreferences();const data=await api('/api/videos');state.videos=data.videos;$('paths').textContent=`项目：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}`;for(const v of data.videos)if(v.label)state.labels[v.id]=v.label;const saved=await api('/api/state');state.labels=saved.labels||state.labels;renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
+function setAllLabelFilters(){state.pendingOnly=false;state.fallOnly=false;state.caregiverOnly=false;$('pendingOnly').textContent='仅看待判断';$('fallOnly').textContent='仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall'}
+function learnDeviceId(id){const normalized=id.trim();if(!normalized||state.learnedDeviceIds.some(item=>item.toLowerCase()===normalized.toLowerCase()))return;state.learnedDeviceIds.unshift(normalized);state.learnedDeviceIds=state.learnedDeviceIds.slice(0,2000);saveDeviceSettings()}
+function applyDeviceQuery(rawQuery=$('deviceSearch').value){
+  const query=rawQuery.trim();if(!query){clearDeviceQuery();return}
+  const literalMatches=state.videos.filter(v=>v.relative.toLowerCase().includes(query.toLowerCase()));
+  const knownMatches=state.videos.filter(v=>v.deviceId?.toLowerCase()===query.toLowerCase());
+  const matches=knownMatches.length?knownMatches:literalMatches;
+  if(!matches.length){$('deviceStatus').textContent=`没有找到文件名包含“${query}”的视频，请检查是否复制完整`;$('deviceStatus').classList.add('error');return}
+  learnDeviceId(query);applyDeviceIds();state.deviceQuery=query;state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===query.toLowerCase());state.sortMode='device';$('search').value='';setAllLabelFilters();$('deviceSearch').value=query;
+  const exactMatches=state.videos.filter(v=>deviceMatches(v));const target=exactMatches.find(v=>v.id===state.current?.id)||exactMatches.find(v=>!state.labels[v.id])||exactMatches[0];if(target)selectVideo(target.id);else renderList()
+}
+function clearDeviceQuery(){state.deviceQuery='';state.deviceExact=false;$('deviceSearch').value='';renderList()}
+function moveDevice(delta){
+  const entries=deviceEntries();if(!entries.length)return;const reference=state.deviceExact?state.deviceQuery:state.current?.deviceId;let index=entries.findIndex(entry=>entry.id.toLowerCase()===String(reference||'').toLowerCase());if(index<0)index=delta>0?-1:entries.length;index=Math.min(entries.length-1,Math.max(0,index+delta));$('deviceSearch').value=entries[index].id;applyDeviceQuery(entries[index].id)
+}
+function renderDeviceRuleForm(){const mode=$('deviceRuleMode').value;$('deviceDelimiter').disabled=mode!=='field';$('deviceFieldIndex').disabled=mode!=='field';$('deviceRegex').disabled=mode!=='regex'}
+function showDeviceRule(){const rule=state.deviceRule;$('deviceRuleMode').value=rule.mode;$('deviceDelimiter').value=rule.delimiter;$('deviceFieldIndex').value=rule.fieldIndex;$('deviceRegex').value=rule.regex;renderDeviceRuleForm();renderDeviceRulePreview();$('deviceDialog').showModal()}
+function renderDeviceRulePreview(){const entries=deviceEntries(),sample=state.videos.slice(0,3).map(v=>`${v.name}  →  ${v.deviceId||'未识别'}`).join('\n');$('deviceRulePreview').textContent=`当前识别 ${entries.length} 个设备${state.learnedDeviceIds.length?`；已记住 ${state.learnedDeviceIds.length} 个查询 ID`:''}${sample?`\n\n示例：\n${sample}`:''}`}
+function saveRuleFromDialog(){
+  const mode=$('deviceRuleMode').value,delimiter=$('deviceDelimiter').value,fieldIndex=Math.max(1,Number($('deviceFieldIndex').value)||1),regex=$('deviceRegex').value.trim();if(mode==='field'&&!delimiter){alert('字段分隔符不能为空');return}if(mode==='regex'&&regex){try{new RegExp(regex)}catch(error){alert(`正则表达式无效：${error.message}`);return}}
+  state.deviceRule={mode,delimiter,fieldIndex,regex};saveDeviceSettings();applyDeviceIds();if(state.deviceQuery)state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===state.deviceQuery.toLowerCase());renderList();renderDeviceRulePreview();$('deviceDialog').close()
+}
+async function init(){renderPreferences();const data=await api('/api/videos');state.source=data.source;loadDeviceSettings();adoptVideos(data.videos);$('paths').textContent=`联合复核：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}`;const saved=await api('/api/state');state.labels=saved.labels||state.labels;renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
 $('search').oninput=renderList;
+$('deviceSearch').oninput=updateDeviceUi;$('deviceSearch').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();applyDeviceQuery()}};$('searchDevice').onclick=()=>applyDeviceQuery();$('clearDevice').onclick=clearDeviceQuery;
+$('currentDevice').onclick=()=>{if(state.current?.deviceId){$('deviceSearch').value=state.current.deviceId;applyDeviceQuery(state.current.deviceId)}};$('previousDevice').onclick=()=>moveDevice(-1);$('nextDevice').onclick=()=>moveDevice(1);
+$('deviceSort').onclick=()=>{state.sortMode=state.sortMode==='device'?'filename':'device';renderList()};$('deviceRule').onclick=showDeviceRule;$('saveDeviceRule').onclick=saveRuleFromDialog;
+$('deviceRuleMode').onchange=renderDeviceRuleForm;
+$('resetDeviceRule').onclick=()=>{state.deviceRule={...DEFAULT_DEVICE_RULE};saveDeviceSettings();applyDeviceIds();renderList();renderDeviceRulePreview()};
+$('clearLearnedDevices').onclick=()=>{if(!confirm('清除这个项目中通过查询记住的设备 ID？标签和审核进度不会受影响。'))return;state.learnedDeviceIds=[];saveDeviceSettings();applyDeviceIds();renderList();renderDeviceRulePreview()};
 $('pendingOnly').onclick=()=>{state.pendingOnly=!state.pendingOnly;if(state.pendingOnly){state.fallOnly=false;state.caregiverOnly=false;$('fallOnly').textContent='仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall'}$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
 $('fallOnly').onclick=()=>{state.fallOnly=!state.fallOnly;if(state.fallOnly){state.pendingOnly=false;state.caregiverOnly=false}$('fallOnly').textContent=state.fallOnly?'取消跌倒筛选':'仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall';$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
 $('caregiverOnly').onclick=()=>{state.caregiverOnly=!state.caregiverOnly;if(state.caregiverOnly){state.pendingOnly=false;state.fallOnly=false}$('caregiverOnly').textContent=state.caregiverOnly?'取消护工筛选':'仅看护工 Fall';$('fallOnly').textContent='仅看跌倒';$('pendingOnly').textContent=state.pendingOnly?'显示全部':'仅看待判断';renderList()};
@@ -205,10 +335,10 @@ document.querySelectorAll('.shortcut-input').forEach(input=>input.onkeydown=even
 $('previous').onclick=()=>moveVideo(-1);$('next').onclick=()=>moveVideo(1);
 player.ontimeupdate=()=>$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
 $('makeProxy').onclick=async()=>{if(!state.current)return;const id=state.current.id;$('makeProxy').disabled=true;$('saveStatus').textContent='正在生成兼容预览…';try{await api('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});const timer=setInterval(async()=>{const result=await api(`/api/proxy-status?id=${id}`);if(result.status==='ready'){clearInterval(timer);if(state.current?.id===id){player.src=result.url;player.load();$('saveStatus').textContent=result.message||'预览已生成'}$('makeProxy').disabled=false}else if(result.status==='error'){clearInterval(timer);$('saveStatus').textContent=result.message;$('makeProxy').disabled=false}},1200)}catch(error){$('saveStatus').textContent=error.message;$('makeProxy').disabled=false}};
-$('exportAll').onclick=async()=>{if(!confirm('确认归档全部已标记视频？\n\n跌倒、不跌倒、护工 Fall 会移动到三个分类目录，成功后原目录不再保留这些文件；未标记视频会继续留在原目录。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
-async function reloadAfterArchive(){const data=await api('/api/videos');state.videos=data.videos;const currentStillExists=state.current&&state.videos.some(v=>v.id===state.current.id);if(!currentStillExists){state.current=null;player.pause();player.removeAttribute('src');player.load();$('workspace').classList.add('hidden');$('empty').classList.remove('hidden');$('empty').textContent=state.videos.length?'正在打开剩余视频…':'已归档全部已标记视频；原目录中没有剩余视频';const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id)}renderList()}
+$('exportAll').onclick=async()=>{if(!confirm('确认整理全部分类修改？\n\n工具会联合检查未分类、跌倒、不跌倒和护工 Fall 四个目录，只把位置错误或新标记的视频移动到正确目录；原本位置正确的视频不会重复处理。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
+async function reloadAfterArchive(){const data=await api('/api/videos');adoptVideos(data.videos);const currentStillExists=state.current&&state.videos.some(v=>v.id===state.current.id);if(!currentStillExists){state.current=null;player.pause();player.removeAttribute('src');player.load();$('workspace').classList.add('hidden');$('empty').classList.remove('hidden');$('empty').textContent=state.videos.length?'正在打开整理后的视频…':'四个目录中都没有视频';const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id)}renderList()}
 async function pollExport(){try{const result=await api('/api/export-status');$('exportStatus').textContent=result.message||'';$('exportStatus').className=`status ${result.status==='error'?'error':result.status==='done'?'done':''}`;$('exportAll').disabled=result.status==='running';if(result.status==='running')setTimeout(pollExport,1000);else if(result.status==='done'||result.status==='error')await reloadAfterArchive()}catch{setTimeout(pollExport,2000)}}
-$('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});state.videos=data.videos;renderList()}catch(error){alert(error.message)}};
+$('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});adoptVideos(data.videos);renderList()}catch(error){alert(error.message)}};
 $('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？已保存的标签不会丢失。'))return;try{await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<div id="empty">工具已安全退出，可以关闭此页面。</div>'}catch(error){alert(error.message)}};
 document.addEventListener('keydown',event=>{if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(event.target.tagName))return;const key=normalizeKey(event.key),action=Object.entries(state.preferences.shortcuts).find(([,shortcut])=>shortcut===key)?.[0];if(!action)return;if(event.repeat&&!['step_back','step_forward','jump_back','jump_forward'].includes(action))return;event.preventDefault();if(action==='fall'||action==='no_fall'||action==='caregiver_fall')saveLabel(action);else if(action==='play_pause')player.paused?player.play():player.pause();else if(action==='loop')toggleLoop();else if(action==='step_back')seek(-1);else if(action==='step_forward')seek(1);else if(action==='jump_back')seek(-state.preferences.seekSeconds);else if(action==='jump_forward')seek(state.preferences.seekSeconds);else if(action==='previous_video')moveVideo(-1);else if(action==='next_video')moveVideo(1);else if(action==='clear_label')clearLabel()});
 init().catch(error=>{$('empty').textContent=`启动失败：${error.message}`});

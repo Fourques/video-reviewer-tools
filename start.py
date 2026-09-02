@@ -117,7 +117,7 @@ def choose_with_gui() -> dict[str, str] | None:
     ttk.Label(outer, text="选择一个视频审核项目", style="Title.TLabel").grid(row=0, column=0, sticky="w")
     ttk.Label(
         outer,
-        text="只读取所选目录第一层的视频，不会扫描任何子目录。输出目录会自动填写，也可以修改。",
+        text="所有目录都只读取第一层。快速分类会联合读取项目目录和三个分类目录，方便复核旧分类。",
         foreground="#52606d",
     ).grid(row=1, column=0, sticky="w", pady=(5, 16))
 
@@ -183,7 +183,7 @@ def choose_with_gui() -> dict[str, str] | None:
         variable=mode_var, value="clip",
     ).grid(row=0, column=0, sticky="w", padx=(0, 18))
     ttk.Radiobutton(
-        mode_frame, text="整段 Fall 快速分类\n标记三类并移动归档，未标记视频留在原目录",
+        mode_frame, text="整段 Fall 快速分类 / 复核\n联合浏览四个目录，可修改旧分类并重新整理",
         variable=mode_var, value="label",
     ).grid(row=0, column=1, sticky="w")
 
@@ -273,8 +273,8 @@ def choose_with_gui() -> dict[str, str] | None:
             "fall_output": str(clean_path(fall_var.get()).resolve()),
             "caregiver_fall_output": str(clean_path(caregiver_fall_var.get()).resolve()),
         }
-        active_outputs = [selection["fall_output"], selection["no_fall_output"], selection["caregiver_fall_output"]] if selection["mode"] == "label" else [selection["output"], selection["no_fall_output"]]
-        if selection["source"] in active_outputs:
+        active_outputs = [selection["output"], selection["no_fall_output"]]
+        if selection["mode"] == "clip" and selection["source"] in active_outputs:
             messagebox.showerror("输出位置错误", "输出目录不能与项目目录完全相同。", parent=root)
             return
         if selection["mode"] == "clip" and selection["output"] == selection["no_fall_output"]:
