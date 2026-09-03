@@ -91,6 +91,10 @@ class LabelApp:
         self.videos: list[Video] = []
         self.video_by_id: dict[str, Video] = {}
         self.proxy_jobs: dict[str, dict[str, Any]] = {}
+        # Browser previews are short, but reviewers can advance faster than an
+        # encode finishes. Keep conversion bounded so a run of quick labels
+        # cannot create hundreds of simultaneous FFmpeg processes.
+        self.proxy_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="label-preview")
         self.export_job: dict[str, Any] = {"status": "idle", "message": "尚未归档"}
         self.scan()
 
@@ -233,7 +237,15 @@ class LabelApp:
             self.save_state()
 
     def proxy_path(self, video_id: str) -> Path:
-        return self.cache / f"label-{video_id}.mp4"
+        video = self.get_video(video_id)
+        try:
+            modified_ns = video.path.stat().st_mtime_ns
+        except OSError:
+            modified_ns = 0
+        fingerprint = hashlib.sha256(
+            f"{self.source}\0{video.path}\0{video.size}\0{modified_ns}".encode("utf-8")
+        ).hexdigest()[:20]
+        return self.cache / f"label-{fingerprint}.mp4"
 
     def proxy_status(self, video_id: str) -> dict[str, Any]:
         path = self.proxy_path(video_id)
@@ -244,12 +256,12 @@ class LabelApp:
 
     def start_proxy(self, video_id: str) -> dict[str, Any]:
         self.get_video(video_id)
-        current = self.proxy_status(video_id)
-        if current["status"] in {"ready", "running"}:
-            return current
         with self.lock:
+            current = self.proxy_status(video_id)
+            if current["status"] in {"ready", "running"}:
+                return current
             self.proxy_jobs[video_id] = {"status": "running", "message": "正在生成兼容预览…"}
-        threading.Thread(target=self._make_proxy, args=(video_id,), daemon=True).start()
+        self.proxy_executor.submit(self._make_proxy, video_id)
         return self.proxy_status(video_id)
 
     def _make_proxy(self, video_id: str) -> None:
@@ -259,8 +271,10 @@ class LabelApp:
         result = run_command([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-i", str(video.path), "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+            "-vf", "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-profile:v", "main", "-tag:v", "avc1",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             str(temporary),
         ])
         with self.lock:
@@ -483,6 +497,10 @@ class LabelHandler(BaseHTTPRequestHandler):
                 self._send_file(INDEX_FILE, allow_range=False, send_body=False)
             elif parsed.path.startswith("/media/"):
                 self._send_file(self.server.app.get_video(parsed.path.removeprefix("/media/")).path, allow_range=True, send_body=False)
+            elif parsed.path.startswith("/proxy/"):
+                video_id = parsed.path.removeprefix("/proxy/")
+                self.server.app.get_video(video_id)
+                self._send_file(self.server.app.proxy_path(video_id), allow_range=True, send_body=False)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
         except (ValueError, OSError) as exc:
