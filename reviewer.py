@@ -316,7 +316,15 @@ class ReviewApp:
             self.save_state()
 
     def proxy_path(self, video_id: str) -> Path:
-        return self.cache / f"{video_id}.mp4"
+        video = self.get_video(video_id)
+        try:
+            modified_ns = video.path.stat().st_mtime_ns
+        except OSError:
+            modified_ns = 0
+        fingerprint = hashlib.sha256(
+            f"{self.source}\0{video.path}\0{video.size}\0{modified_ns}".encode("utf-8")
+        ).hexdigest()[:20]
+        return self.cache / f"clip-{fingerprint}.mp4"
 
     def proxy_status(self, video_id: str) -> dict[str, Any]:
         path = self.proxy_path(video_id)
@@ -339,15 +347,21 @@ class ReviewApp:
         video = self.get_video(video_id)
         destination = self.proxy_path(video_id)
         temporary = destination.with_suffix(".tmp.mp4")
-        command = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-i", str(video.path), "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264",
-            "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k",
-            "-movflags", "+faststart",
-            str(temporary),
-        ]
-        result = run_command(command)
+        def command(include_audio: bool) -> list[str]:
+            audio = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if include_audio else ["-an"]
+            return [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                "-fflags", "+genpts", "-i", str(video.path), "-map", "0:v:0", *audio,
+                "-vf", "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p,pad='ceil(iw/2)*2':'ceil(ih/2)*2'",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-profile:v", "main", "-tag:v", "avc1", "-sn", "-dn",
+                "-max_muxing_queue_size", "2048", "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart", str(temporary),
+            ]
+        result = run_command(command(include_audio=True))
+        if result.returncode != 0:
+            temporary.unlink(missing_ok=True)
+            result = run_command(command(include_audio=False))
         with self.lock:
             if result.returncode == 0 and temporary.exists():
                 temporary.replace(destination)

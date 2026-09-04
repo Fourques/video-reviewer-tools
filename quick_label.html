@@ -51,6 +51,7 @@
     .badge.safe { color:var(--safe); }
     .badge.caregiver { color:var(--caregiver); }
     .badge.warn { color:#ffd075; }
+    .badge.metadata { color:#b9d8ff; background:#223a57; }
     .side-foot { display:grid; gap:8px; padding:12px; border-top:1px solid var(--line); }
     .side-foot-head { display:flex; align-items:flex-start; justify-content:space-between; gap:7px; }
     .side-foot-head #summary { flex:1; }
@@ -87,6 +88,15 @@
     .settings-grid input.shortcut-input { cursor:pointer; }
     .settings-grid input.shortcut-input:focus { border-color:var(--accent); box-shadow:0 0 0 2px #66b7ff33; outline:none; }
     .settings-actions { display:flex; justify-content:flex-end; gap:8px; }
+    .metadata-path-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; margin-top:12px; }
+    .metadata-path-row input { min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
+    .csv-browser { max-height:260px; margin:10px 0; overflow:auto; border:1px solid var(--line); border-radius:8px; background:#10141b; }
+    .csv-browser-head { position:sticky; top:0; z-index:1; display:flex; gap:7px; align-items:center; padding:8px; background:#171d26; border-bottom:1px solid var(--line); }
+    .csv-browser-path { flex:1; min-width:0; color:var(--muted); font-size:12px; word-break:break-all; }
+    .csv-entry { display:block; width:100%; padding:8px 11px; text-align:left; border:0; border-bottom:1px solid #28303b; border-radius:0; background:transparent; }
+    .csv-entry.folder::before { content:'📁 '; }
+    .csv-entry.file::before { content:'▦ '; color:var(--safe); }
+    .metadata-current { min-height:38px; margin:10px 0; padding:9px; color:#bedcff; white-space:pre-wrap; background:#111a25; border-radius:7px; }
     kbd { padding:1px 5px; border:1px solid var(--line); border-radius:4px; background:#0f1217; }
     .save { min-height:20px; margin-top:5px; color:var(--muted); }
     .error { color:#ff858d; }
@@ -101,7 +111,7 @@
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类</h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.4.0</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
@@ -122,9 +132,10 @@
             <button id="currentDevice">当前设备</button>
             <button id="previousDevice">上一设备</button>
             <button id="nextDevice">下一设备</button>
-            <button id="deviceRule">识别规则</button>
+            <button id="deviceRule">文件名备用规则</button>
           </div>
           <button id="deviceSort">按设备分组排序</button>
+          <button id="metadataSettings">CSV 原始标签与设备设置</button>
         </div>
       </div>
     </div>
@@ -156,6 +167,7 @@
         <button id="loopVideo">循环当前视频 (W)</button>
         <label>速度 <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option><option>16</option></select></label>
         <button id="makeProxy">重新加载兼容预览</button>
+        <button id="makeAllProxies">后台兼容全部视频</button>
         <button id="clearLabel">撤销当前标签</button>
         <button id="settingsButton">快捷键设置</button>
       </div>
@@ -170,6 +182,7 @@
         <span><kbd id="previousKeyHint">[</kbd>/<kbd id="nextKeyHint">]</kbd> 上一个/下一个</span><span><kbd id="clearKeyHint">Backspace</kbd> 撤销</span>
       </div>
       <div id="saveStatus" class="save"></div>
+      <div id="proxyAllStatus" class="save"></div>
     </section>
   </main>
 </div>
@@ -209,6 +222,35 @@
     <div class="settings-actions"><button id="clearLearnedDevices" type="button">清除查询记录</button><button id="resetDeviceRule" type="button">恢复自动识别</button><button id="saveDeviceRule" type="button">应用规则</button></div>
   </form>
 </dialog>
+<dialog id="metadataDialog">
+  <form method="dialog" class="settings-card">
+    <div class="settings-head"><h2>CSV 原始标签与设备对照</h2><button value="close">关闭</button></div>
+    <div class="meta">自动查找项目目录及上级目录中的 CSV。CSV 只读；配置保存在隐藏进度文件中。先选择视频匹配列，再选设备 ID 列和最多 3 个需要展示的原始标签列。</div>
+    <datalist id="metadataSuggestions"></datalist>
+    <div class="metadata-path-row">
+      <input id="metadataPath" list="metadataSuggestions" placeholder="CSV 文件完整路径">
+      <button id="readMetadataColumns" type="button">读取列</button>
+      <button id="browseMetadata" type="button">浏览…</button>
+    </div>
+    <div id="csvBrowser" class="csv-browser hidden">
+      <div class="csv-browser-head"><button id="csvParent" type="button">上一级</button><div id="csvBrowserPath" class="csv-browser-path"></div></div>
+      <div id="csvBrowserList"></div>
+    </div>
+    <div class="settings-grid">
+      <label>视频匹配列 <select id="metadataFileColumn"></select></label>
+      <label>设备 ID 列 <select id="metadataDeviceColumn"></select></label>
+      <label>展示标签 1 <select id="metadataLabel1"></select></label>
+      <label>展示标签 2 <select id="metadataLabel2"></select></label>
+      <label>展示标签 3 <select id="metadataLabel3"></select></label>
+    </div>
+    <div id="metadataStatus" class="metadata-current"></div>
+    <div class="settings-actions">
+      <button id="disableMetadata" type="button">不使用 CSV</button>
+      <button id="autoMetadata" type="button">重新自动识别</button>
+      <button id="applyMetadata" type="button" class="safe-button">应用设置</button>
+    </div>
+  </form>
+</dialog>
 <script>
 const $=id=>document.getElementById(id);
 const player=$('player');
@@ -225,7 +267,7 @@ const DEFAULT_DEVICE_RULE={mode:'auto',delimiter:'_',fieldIndex:2,regex:''};
 const LAYOUT_KEY='videoReviewer.quickLabel.layout.v1';
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function loadLayout(){try{return{toolsCollapsed:false,actionsCollapsed:true,...JSON.parse(localStorage.getItem(LAYOUT_KEY)||'{}')}}catch{return{toolsCollapsed:false,actionsCollapsed:true}}}
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0};
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',output:'',noFallOutput:'',caregiverOutput:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0,metadataConfig:{},metadataColumns:[],detectedCsvs:[]};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
@@ -277,7 +319,7 @@ function ruleDeviceId(video,learnedIds){
 }
 function applyDeviceIds(){state.autoDeviceField=inferAutoDeviceField(state.videos);state.autoDeviceTokens=inferRepeatedDeviceTokens(state.videos);const learned=[...state.learnedDeviceIds].sort((a,b)=>b.length-a.length);for(const video of state.videos)video.deviceId=video.metadataDeviceId||ruleDeviceId(video,learned)}
 function adoptVideos(videos){state.videos=videos;state.labels={};for(const video of videos)if(video.label)state.labels[video.id]=video.label;applyDeviceIds()}
-function adoptVideoResponse(data){state.metadataCsv=data.metadataCsv||'';state.metadataMatched=Number(data.metadataMatched)||0;state.metadataConflicts=Number(data.metadataConflicts)||0;adoptVideos(data.videos||[])}
+function adoptVideoResponse(data){state.source=data.source||state.source;state.output=data.output||state.output;state.noFallOutput=data.noFallOutput||state.noFallOutput;state.caregiverOutput=data.caregiverOutput||state.caregiverOutput;state.metadataCsv=data.metadataCsv||'';state.metadataMatched=Number(data.metadataMatched)||0;state.metadataConflicts=Number(data.metadataConflicts)||0;state.metadataConfig=data.metadataConfig||{};state.metadataColumns=data.metadataColumns||[];state.detectedCsvs=data.detectedCsvs||[];adoptVideos(data.videos||[])}
 function deviceEntries(){
   const counts=new Map();for(const video of state.videos)if(video.deviceId)counts.set(video.deviceId,(counts.get(video.deviceId)||0)+1);
   return [...counts].map(([id,count])=>({id,count})).sort((a,b)=>collator.compare(a.id,b.id));
@@ -296,10 +338,12 @@ function updateDeviceUi(){
   if(state.deviceQuery){const matches=state.videos.filter(v=>deviceMatches(v)),done=matches.filter(v=>state.labels[v.id]).length;$('deviceStatus').textContent=`设备查询：${state.deviceQuery} · ${matches.length} 个视频 · 已判断 ${done} · 待判断 ${matches.length-done}`;$('deviceStatus').classList.add('active')}
   else{const inferred=state.deviceRule.mode==='auto'?(state.autoDeviceField?`自动字段“${state.autoDeviceField.delimiter}”第 ${state.autoDeviceField.index+1} 段`:'自动规则暂未找到重复字段'):state.deviceRule.mode==='field'?`按“${state.deviceRule.delimiter}”第 ${state.deviceRule.fieldIndex} 段`:'按正则表达式';$('deviceStatus').textContent=state.metadataCsv?`CSV 已匹配 ${state.metadataMatched}/${state.videos.length} 个视频 · ${entries.length} 个设备${state.metadataConflicts?` · ${state.metadataConflicts} 个重名冲突`:''}`:`识别到 ${entries.length} 个设备 · ${inferred}`;$('deviceStatus').classList.remove('active')}
 }
+function metadataBadges(video){return(video.metadataLabels||[]).map(item=>`<span class="badge metadata">${escapeHtml(item.column)}：${escapeHtml(item.value||'—')}</span>`).join('')}
+function metadataLines(video){return(video.metadataLabels||[]).map(item=>`${item.column}：${item.value||'—'}`).join('\n')}
 function renderList(){
   const videos=visibleVideos();
   let lastDevice=null,html='';const grouped=state.sortMode==='device',deviceCounts=new Map();if(grouped)for(const item of state.videos){const id=item.deviceId||'未识别设备';deviceCounts.set(id,(deviceCounts.get(id)||0)+1)}
-  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
+  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${metadataBadges(v)}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
   $('videoList').innerHTML=html||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
   document.querySelectorAll('.item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
   requestAnimationFrame(()=>document.querySelector('.item.active')?.scrollIntoView({block:'nearest'}));
@@ -338,7 +382,7 @@ async function loadCompatiblePreview(id){
     $('saveStatus').textContent=`兼容预览失败：${error.message}`;$('saveStatus').className='save error';
   }finally{if(token===state.previewToken)$('makeProxy').disabled=false}
 }
-function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;$('currentPath').textContent=video.deviceId?`${video.relative}\n设备 ID：${video.deviceId}`:video.relative;$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';renderList();updateDecision();loadCompatiblePreview(id)}
+function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);const metadata=metadataLines(video);if(metadata)details.push(`CSV 原始字段：\n${metadata}`);$('currentPath').textContent=details.join('\n');$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';renderList();updateDecision();loadCompatiblePreview(id)}
 function nextIdBeforeLabel(){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id);const following=ordered.find((v,index)=>index>currentIndex&&matchesFilters(v));return following?.id||ordered.find(v=>v.id!==state.current?.id&&matchesFilters(v))?.id}
 function saveLabel(label,goNext=true){
   if(!state.current||state.deciding)return state.saving;state.deciding=true;const id=state.current.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;renderList();updateDecision();
@@ -374,13 +418,48 @@ function saveRuleFromDialog(){
   const mode=$('deviceRuleMode').value,delimiter=$('deviceDelimiter').value,fieldIndex=Math.max(1,Number($('deviceFieldIndex').value)||1),regex=$('deviceRegex').value.trim();if(mode==='field'&&!delimiter){alert('字段分隔符不能为空');return}if(mode==='regex'&&regex){try{new RegExp(regex)}catch(error){alert(`正则表达式无效：${error.message}`);return}}
   state.deviceRule={mode,delimiter,fieldIndex,regex};saveDeviceSettings();applyDeviceIds();if(state.deviceQuery)state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===state.deviceQuery.toLowerCase());renderList();renderDeviceRulePreview();$('deviceDialog').close()
 }
-async function init(){renderPreferences();renderLayout();const data=await api('/api/videos');state.source=data.source;loadDeviceSettings();adoptVideoResponse(data);$('paths').textContent=`联合复核：${data.source}\n跌倒：${data.output}\n不跌倒：${data.noFallOutput}\n护工 Fall：${data.caregiverOutput}${data.metadataCsv?`\n设备映射：${data.metadataCsv}`:''}`;const saved=await api('/api/state');state.labels=saved.labels||state.labels;if(state.videos.length&&state.videos.every(video=>state.labels[video.id]))setAllLabelFilters();renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport()}
+function renderPaths(){$('paths').textContent=`联合复核：${state.source}\n跌倒：${state.output}\n不跌倒：${state.noFallOutput}\n护工 Fall：${state.caregiverOutput}${state.metadataCsv?`\nCSV 对照：${state.metadataCsv}`:''}`}
+function setColumnOptions(id,columns,selected,blankLabel){const select=$(id);select.textContent='';const blank=document.createElement('option');blank.value='';blank.textContent=blankLabel;select.appendChild(blank);for(const column of columns){const option=document.createElement('option');option.value=column;option.textContent=column;option.selected=column===selected;select.appendChild(option)}}
+function showMetadataStatus(message,kind=''){$('metadataStatus').textContent=message;$('metadataStatus').className=`metadata-current ${kind}`}
+function fillMetadataColumns(info,preferCurrent=false){
+  const current=preferCurrent&&state.metadataConfig.path===info.path?state.metadataConfig:info.guess||{},labels=current.labelColumns||[];
+  $('metadataPath').value=info.path;setColumnOptions('metadataFileColumn',info.columns,current.fileColumn||'','请选择匹配列');setColumnOptions('metadataDeviceColumn',info.columns,current.deviceColumn||'','不读取设备 ID');
+  for(let index=0;index<3;index++)setColumnOptions(`metadataLabel${index+1}`,info.columns,labels[index]||'',index?'不展示更多':'不展示原始标签');
+  showMetadataStatus(`已读取 ${info.columns.length} 列。当前选择：匹配=${current.fileColumn||'未选'}；设备=${current.deviceColumn||'不读取'}；标签=${labels.join('、')||'不展示'}`)
+}
+async function loadMetadataColumns(path=$('metadataPath').value,preferCurrent=false){try{showMetadataStatus('正在读取 CSV 表头…');const info=await api('/api/csv-columns?'+new URLSearchParams({path:path.trim()}));fillMetadataColumns(info,preferCurrent);return info}catch(error){showMetadataStatus(error.message,'error');throw error}}
+function updateMetadataSuggestions(){const list=$('metadataSuggestions');list.textContent='';for(const path of state.detectedCsvs){const option=document.createElement('option');option.value=path;list.appendChild(option)}}
+async function openMetadataDialog(){
+  updateMetadataSuggestions();$('csvBrowser').classList.add('hidden');$('metadataDialog').showModal();
+  const path=state.metadataCsv||state.detectedCsvs[0]||'';$('metadataPath').value=path;
+  if(path)await loadMetadataColumns(path,true).catch(()=>{});else showMetadataStatus('没有自动发现 CSV，可粘贴完整路径或点击“浏览…”选择。')
+}
+let csvBrowserParent='';
+async function loadCsvBrowser(path=''){
+  try{const data=await api('/api/csv-browser?'+new URLSearchParams({path}));csvBrowserParent=data.parent||'';$('csvParent').disabled=!csvBrowserParent;$('csvBrowserPath').textContent=data.path;const list=$('csvBrowserList');list.textContent='';
+    for(const item of data.directories){const button=document.createElement('button');button.type='button';button.className='csv-entry folder';button.textContent=item.name;button.onclick=()=>loadCsvBrowser(item.path);list.appendChild(button)}
+    for(const item of data.csvFiles){const button=document.createElement('button');button.type='button';button.className='csv-entry file';button.textContent=item.name;button.title=item.path;button.onclick=async()=>{$('metadataPath').value=item.path;await loadMetadataColumns(item.path);$('csvBrowser').classList.add('hidden')};list.appendChild(button)}
+    if(!data.directories.length&&!data.csvFiles.length)list.innerHTML='<div class="meta" style="padding:14px">这个目录没有子目录或 CSV</div>';if(data.truncated)list.insertAdjacentHTML('beforeend','<div class="meta" style="padding:8px">项目过多，仅显示前 1000 个</div>')
+  }catch(error){showMetadataStatus(error.message,'error')}
+}
+async function refreshMetadata(data){const currentId=state.current?.id;adoptVideoResponse(data);renderPaths();renderList();const current=state.videos.find(video=>video.id===currentId);if(current)selectVideo(current.id);updateMetadataSuggestions()}
+async function applyMetadataPayload(payload){
+  for(const id of ['applyMetadata','autoMetadata','disableMetadata'])$(id).disabled=true;showMetadataStatus('正在匹配 CSV 与视频…');
+  try{const data=await api('/api/metadata-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await refreshMetadata(data);$('metadataDialog').close()}
+  catch(error){showMetadataStatus(error.message,'error')}
+  finally{for(const id of ['applyMetadata','autoMetadata','disableMetadata'])$(id).disabled=false}
+}
+async function pollProxyAll(){try{const result=await api('/api/proxy-all-status');$('proxyAllStatus').textContent=result.message||'';$('proxyAllStatus').className=`save ${result.status==='error'?'error':result.status==='done'?'done':''}`;$('makeAllProxies').disabled=result.status==='running';$('makeAllProxies').textContent=result.status==='running'?`后台兼容中 ${result.done||0}/${result.total||0}`:'后台兼容全部视频';if(result.status==='running')setTimeout(pollProxyAll,1000)}catch{setTimeout(pollProxyAll,2000)}}
+async function init(){renderPreferences();renderLayout();const data=await api('/api/videos');adoptVideoResponse(data);loadDeviceSettings();applyDeviceIds();renderPaths();const saved=await api('/api/state');state.labels=saved.labels||state.labels;if(state.videos.length&&state.videos.every(video=>state.labels[video.id]))setAllLabelFilters();renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport();pollProxyAll()}
 $('toggleSideTools').onclick=()=>{state.layout.toolsCollapsed=!state.layout.toolsCollapsed;saveLayout();renderLayout()};
 $('toggleSideActions').onclick=()=>{state.layout.actionsCollapsed=!state.layout.actionsCollapsed;saveLayout();renderLayout()};
 $('search').oninput=renderList;
 $('deviceSearch').oninput=updateDeviceUi;$('deviceSearch').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();applyDeviceQuery()}};$('searchDevice').onclick=()=>applyDeviceQuery();$('clearDevice').onclick=clearDeviceQuery;
 $('currentDevice').onclick=()=>{if(state.current?.deviceId){$('deviceSearch').value=state.current.deviceId;applyDeviceQuery(state.current.deviceId)}};$('previousDevice').onclick=()=>moveDevice(-1);$('nextDevice').onclick=()=>moveDevice(1);
 $('deviceSort').onclick=()=>{state.sortMode=state.sortMode==='device'?'filename':'device';renderList()};$('deviceRule').onclick=showDeviceRule;$('saveDeviceRule').onclick=saveRuleFromDialog;
+$('metadataSettings').onclick=openMetadataDialog;$('readMetadataColumns').onclick=()=>loadMetadataColumns().catch(()=>{});$('browseMetadata').onclick=()=>{$('csvBrowser').classList.remove('hidden');loadCsvBrowser(state.metadataCsv?state.metadataCsv.replace(/[/\\][^/\\]+$/,''):state.source)};$('csvParent').onclick=()=>{if(csvBrowserParent)loadCsvBrowser(csvBrowserParent)};
+$('applyMetadata').onclick=()=>applyMetadataPayload({path:$('metadataPath').value,fileColumn:$('metadataFileColumn').value,deviceColumn:$('metadataDeviceColumn').value,labelColumns:[$('metadataLabel1').value,$('metadataLabel2').value,$('metadataLabel3').value].filter(Boolean)});
+$('autoMetadata').onclick=()=>applyMetadataPayload({auto:true});$('disableMetadata').onclick=()=>applyMetadataPayload({disabled:true});
 $('deviceRuleMode').onchange=renderDeviceRuleForm;
 $('resetDeviceRule').onclick=()=>{state.deviceRule={...DEFAULT_DEVICE_RULE};saveDeviceSettings();applyDeviceIds();renderList();renderDeviceRulePreview()};
 $('clearLearnedDevices').onclick=()=>{if(!confirm('清除这个项目中通过查询记住的设备 ID？标签和审核进度不会受影响。'))return;state.learnedDeviceIds=[];saveDeviceSettings();applyDeviceIds();renderList();renderDeviceRulePreview()};
@@ -397,6 +476,7 @@ $('previous').onclick=()=>moveVideo(-1);$('next').onclick=()=>moveVideo(1);
 player.ontimeupdate=()=>$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
 player.onerror=()=>{if(state.current&&player.currentSrc.includes('/proxy/'))setPreviewOverlay('兼容预览载入失败，请点击“重新加载兼容预览”','error')};
 $('makeProxy').onclick=()=>{if(state.current)loadCompatiblePreview(state.current.id)};
+$('makeAllProxies').onclick=async()=>{try{await api('/api/proxy-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollProxyAll()}catch(error){$('proxyAllStatus').textContent=error.message;$('proxyAllStatus').className='save error'}};
 $('exportAll').onclick=async()=>{if(!confirm('确认整理全部分类修改？\n\n工具会联合检查未分类、跌倒、不跌倒和护工 Fall 四个目录，只把位置错误或新标记的视频移动到正确目录；原本位置正确的视频不会重复处理。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
 async function reloadAfterArchive(){const data=await api('/api/videos');adoptVideoResponse(data);const currentStillExists=state.current&&state.videos.some(v=>v.id===state.current.id);if(!currentStillExists){state.current=null;player.pause();player.removeAttribute('src');player.load();$('workspace').classList.add('hidden');$('empty').classList.remove('hidden');$('empty').textContent=state.videos.length?'正在打开整理后的视频…':'四个目录中都没有视频';const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id)}renderList()}
 async function pollExport(){try{const result=await api('/api/export-status');$('exportStatus').textContent=result.message||'';$('exportStatus').className=`status ${result.status==='error'?'error':result.status==='done'?'done':''}`;$('exportAll').disabled=result.status==='running';if(result.status==='running')setTimeout(pollExport,1000);else if(result.status==='done'||result.status==='error')await reloadAfterArchive()}catch{setTimeout(pollExport,2000)}}
