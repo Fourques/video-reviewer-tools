@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 固定主目录 -> 固定 NAS 目录；只同步 Git 跟踪文件，保留两边运行数据。
+# 固定主目录 -> 固定 NAS 目录；同步源码及最新安装包，保留两边运行数据。
 set -euo pipefail
 
 source_dir=/home/duanqw/Kami/video_clip_reviewer
@@ -41,5 +41,29 @@ if [[ $# -eq 0 ]]; then
         echo "$changes" >&2
         exit 1
     fi
-    echo "同步完成，程序文件内容校验一致：$target_dir"
+fi
+package_files=()
+for name in VideoReviewer-Windows-x64.zip VideoReviewer-Linux-x64.tar.gz \
+    VideoReviewer-macOS-AppleSilicon.zip VideoReviewer-macOS-Intel.zip VERSION.txt; do
+    if [[ -f "packages/$name" && ! -L "packages/$name" ]]; then
+        package_files+=("packages/$name")
+    fi
+done
+if [[ ${#package_files[@]} -gt 0 ]]; then
+    [[ ! -L "$target_dir/packages" ]] || { echo "安装包目标不能是符号链接。" >&2; exit 1; }
+    if [[ $# -eq 0 ]]; then
+        mkdir -p -- "$target_dir/packages"
+    fi
+    rsync -rt --checksum --omit-dir-times --itemize-changes "${dry_run[@]}" \
+        "${package_files[@]}" "$target_dir/packages/"
+    if [[ $# -eq 0 ]]; then
+        changes="$(rsync -cn --itemize-changes "${package_files[@]}" "$target_dir/packages/")"
+        if [[ -n "$changes" ]]; then
+            echo "安装包同步后校验未通过：$changes" >&2
+            exit 1
+        fi
+    fi
+fi
+if [[ $# -eq 0 ]]; then
+    echo "同步完成，源码和已有安装包内容校验一致：$target_dir"
 fi

@@ -9,4 +9,5 @@ fall_output/
 *.zip
 build/
 dist/
+packages/
 *.spec.bak
