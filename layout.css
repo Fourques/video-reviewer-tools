@@ -27,6 +27,11 @@ body:has(.app) { overflow:auto; }
 .app .controls button { padding:6px 8px; font-size:12px; white-space:nowrap; }
 .app .controls .time { min-width:0; font-size:12px; }
 .app .controls label { display:flex; align-items:center; gap:6px; }
+.app .playback-options { display:flex; align-items:center; flex:none; gap:14px; margin:0 0 8px; font-size:12px; color:#aab8cc; }
+.app .playback-options label { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.app .playback-options input { width:auto; margin:0; accent-color:#60a5fa; }
+.app #playbackHint { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.app .preview-overlay.startable { pointer-events:auto; cursor:pointer; }
 .app .decision { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; flex:none; margin:0 0 6px; }
 .app .decision button { min-height:46px; padding:7px 9px; font-size:14px; }
 .app .shortcuts { flex:none; height:50px; max-height:50px; align-content:center; overflow:auto; padding:6px 9px; font-size:11px; }

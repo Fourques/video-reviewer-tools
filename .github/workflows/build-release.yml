@@ -42,6 +42,8 @@ jobs:
         run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py app_runtime.py scan_support.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Playback regression tests
+        run: node --test tests/playback.test.cjs
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
       - name: Verify bundled FFmpeg and startup (Windows)

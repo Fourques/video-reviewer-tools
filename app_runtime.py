@@ -86,7 +86,7 @@ class RuntimeHandlerMixin:
     def runtime_get(self):
         route = urlparse(self.path)
         runtime = getattr(self.server, "runtime", None)
-        if route.path in {"/assets/app.js", "/assets/layout.css"}:
+        if route.path in {"/assets/app.js", "/assets/layout.css", "/assets/playback.js"}:
             name = route.path.rsplit("/", 1)[-1]
             body = (ASSETS / name).read_bytes()
             self.send_response(200)

@@ -158,7 +158,7 @@
             <button id="setStart">当前画面作为起点</button>
             <button id="setCenter">当前画面放在中间 (C)</button>
             <button id="preview">循环预览这 8 秒 (W)</button>
-            <label>速度 <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>8</option></select></label>
+            <label>速度 <select id="speed"><option>0.5</option><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option><option>4</option></select></label>
             <button id="makeProxy">无法播放？生成兼容预览</button>
           </div>
 
@@ -326,7 +326,7 @@ async function selectVideo(id) {
   $('currentName').textContent=video.name; $('currentPath').textContent=video.relative;
   $('clipStart').max=maxStart(); $('durationLabel').textContent=`总时长 ${formatTime(video.duration)}`;
   setClipStart(0); renderList(); renderClips(); updateStatusButtons();
-  player.src=`/media/${encodeURIComponent(id)}`; player.playbackRate=Number($('speed').value); player.load();
+  player.src=`/media/${encodeURIComponent(id)}`; applyPlaybackSpeed(); player.load(); applyPlaybackSpeed();
   $('keyframeNotice').textContent='正在读取关键帧（长视频首次读取可能需要一些时间）…';
   try {
     const data=await api(`/api/keyframes?id=${encodeURIComponent(id)}`);
@@ -455,7 +455,10 @@ $('overview').onclick=event=>{
   player.currentTime=fraction*state.current.duration;
   if($('followPlayer').checked)setClipStart(player.currentTime-4,false);
 };
-$('speed').onchange=()=>player.playbackRate=Number($('speed').value);
+function applyPlaybackSpeed(){player.defaultPlaybackRate=Number($('speed').value);player.playbackRate=Number($('speed').value)}
+try{const saved=localStorage.getItem('videoReviewer.clip.playbackRate');if([...$('speed').options].some(option=>option.value===saved))$('speed').value=saved}catch{}
+player.addEventListener('loadedmetadata',applyPlaybackSpeed);
+$('speed').onchange=()=>{applyPlaybackSpeed();try{localStorage.setItem('videoReviewer.clip.playbackRate',$('speed').value)}catch{}$('speed').blur()};
 document.querySelectorAll('[data-shift]').forEach(el=>el.onclick=()=>shiftSelection(Number(el.dataset.shift)));
 $('addClip').onclick=addClip;
 $('markNoFall').onclick=toggleNoFall;

@@ -381,7 +381,7 @@ def main() -> int:
             stream.reconfigure(errors="backslashreplace")
     args = parse_args()
     if args.self_test:
-        required = ["launcher.html", "index.html", "quick_label.html", "app.js", "layout.css"]
+        required = ["launcher.html", "index.html", "quick_label.html", "app.js", "playback.js", "layout.css"]
         missing = [name for name in required if not Path(__file__).with_name(name).is_file()]
         if missing:
             print(f"自检失败：缺少资源文件：{', '.join(missing)}", file=sys.stderr)
@@ -401,7 +401,7 @@ def main() -> int:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            for route in ("/", "/assets/app.js", "/assets/layout.css", "/api/runtime"):
+            for route in ("/", "/assets/app.js", "/assets/playback.js", "/assets/layout.css", "/api/runtime"):
                 connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
                     connection.request("GET", route)
