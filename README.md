@@ -7,6 +7,18 @@
 
 Windows、macOS、Linux 和远程 Linux 服务器使用同一套响应式网页界面。视频不会上传到互联网。所有涉及的目录都只读取第一层视频，不扫描子目录。
 
+## 唯一维护目录
+
+服务器上的源码只维护这一份：
+
+```text
+/home/duanqw/Kami/video_clip_reviewer
+```
+
+以后开发、启动、提交 Git 和发布新版本都在此目录完成，不再在旁边或数据盘创建 `video_reviewer_release_v*` 版本副本。跨平台安装包由 GitHub Actions 构建并保存到 GitHub Releases；需要发给同事时直接下载对应系统的最新压缩包即可。
+
+审核视频、分类结果和隐藏进度文件仍保存在用户选择的数据/输出目录中，它们不是程序副本，不应随程序版本清理。
+
 ## 推荐：下载免安装版
 
 GitHub Releases 提供四个自包含版本：
