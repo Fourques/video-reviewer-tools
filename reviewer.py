@@ -84,6 +84,11 @@ def ffmpeg_executable() -> str:
 def run_command(args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     if args and args[0] == "ffmpeg":
         args = [ffmpeg_executable(), *args[1:]]
+    # PyInstaller's console=False only hides our own window. FFmpeg is a
+    # console executable, so suppress its console for every background call.
+    process_options: dict[str, Any] = {}
+    if sys.platform == "win32":
+        process_options["creationflags"] = subprocess.CREATE_NO_WINDOW
     return subprocess.run(
         args,
         stdin=subprocess.DEVNULL,
@@ -92,6 +97,7 @@ def run_command(args: list[str], timeout: float | None = None) -> subprocess.Com
         text=True,
         timeout=timeout,
         check=False,
+        **process_options,
     )
 
 

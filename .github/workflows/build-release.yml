@@ -49,7 +49,8 @@ jobs:
         shell: pwsh
         run: |
           $env:VIDEO_REVIEWER_TEST_MODE = "1"
-          & "dist/VideoReviewer/VideoReviewer.exe" --self-test
+          $app = Start-Process -FilePath "dist/VideoReviewer/VideoReviewer.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw "Application self-test failed: $($app.ExitCode)" }
       - name: Verify bundled FFmpeg and startup (Linux)
         if: matrix.kind == 'linux'
         run: VIDEO_REVIEWER_TEST_MODE=1 ./dist/VideoReviewer/VideoReviewer --self-test
