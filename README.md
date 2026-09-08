@@ -7,7 +7,7 @@
 
 Windows、macOS、Linux 和远程 Linux 服务器使用同一套响应式网页界面。视频不会上传到互联网。所有涉及的目录都只读取第一层视频，不扫描子目录。
 
-## 唯一维护目录
+## 固定维护与同步目录
 
 服务器上的源码只维护这一份：
 
@@ -15,7 +15,15 @@ Windows、macOS、Linux 和远程 Linux 服务器使用同一套响应式网页�
 /home/duanqw/Kami/video_clip_reviewer
 ```
 
-以后开发、启动、提交 Git 和发布新版本都在此目录完成，不再在旁边或数据盘创建 `video_reviewer_release_v*` 版本副本。跨平台安装包由 GitHub Actions 构建并保存到 GitHub Releases；需要发给同事时直接下载对应系统的最新压缩包即可。
+NAS 保留一份相同的源码，供共享使用：
+
+```text
+/mnt/27_1-B2B-data/2026/duanqingwu/qwen3vl_vllm/datasets/video_clip_reviewer
+```
+
+以后在本机主目录开发、提交 Git；每次更新完成后运行 `./sync_to_nas.sh`，将 Git 跟踪的程序文件同步到 NAS 并校验内容。新增文件需先 `git add`；可用 `./sync_to_nas.sh --dry-run` 预览变化。同步是本机到 NAS 的单向覆盖，不是后台自动同步，请在本机主目录修改代码。删除或改名的程序文件需要同时清理 NAS 中对应的旧文件。
+
+两边都只保留当前版本，不创建日期或版本号备份。同步不包含 Git 历史、构建产物、视频、预览缓存和个人审核进度，也不删除 NAS 中额外的数据。NAS 源码版使用 `start_mac_linux.sh` / `start_windows.bat` 启动，需要 Python 和 FFmpeg。跨平台免安装包由 GitHub Actions 构建并保存到 GitHub Releases。
 
 审核视频、分类结果和隐藏进度文件仍保存在用户选择的数据/输出目录中，它们不是程序副本，不应随程序版本清理。
 
