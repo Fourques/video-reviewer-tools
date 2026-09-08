@@ -117,6 +117,8 @@
       .selection-info { align-items:flex-start; flex-direction:column; }
     }
   </style>
+  <link rel="stylesheet" href="/assets/layout.css">
+  <script src="/assets/app.js" defer></script>
 </head>
 <body>
 <div class="app">
@@ -238,7 +240,7 @@ function formatTime(seconds) {
 }
 function formatSize(bytes) { const u=['B','KB','MB','GB','TB']; let i=0; while(bytes>=1024&&i<u.length-1){bytes/=1024;i++} return `${bytes.toFixed(i?1:0)} ${u[i]}`; }
 async function api(url, options={}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, {keepalive:options.method==='POST', ...options});
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
   return data;

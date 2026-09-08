@@ -106,12 +106,14 @@
     @media(max-width:520px) { .settings-grid { grid-template-columns:1fr; } }
     @media(max-width:760px) { body { overflow:auto; } .app { display:block; height:auto; } aside { height:auto; max-height:38dvh; } main { height:62dvh; } }
   </style>
+  <link rel="stylesheet" href="/assets/layout.css">
+  <script src="/assets/app.js" defer></script>
 </head>
 <body>
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.4.1</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.5.0</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
@@ -157,6 +159,7 @@
         <div class="title"><div id="currentName" class="current-name"></div><div id="currentPath" class="current-path"></div></div>
         <div class="nav"><button id="previous">上一个</button><button id="next">下一个</button></div>
       </div>
+      <div id="currentMetadata" class="current-metadata"></div>
       <div class="video-stage">
         <video id="player" controls preload="metadata" playsinline></video>
         <div id="previewOverlay" class="preview-overlay">正在准备兼容预览…</div>
@@ -271,7 +274,7 @@ const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,ca
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
-async function api(url,options={}){const response=await fetch(url,options);const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
+async function api(url,options={}){const response=await fetch(url,{keepalive:options.method==='POST',...options});const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
 function labelName(label){return label==='fall'?'跌倒':label==='no_fall'?'不跌倒':label==='caregiver_fall'?'护工 Fall':'待判断'}
 function filenameStem(name){const dot=name.lastIndexOf('.');return dot>0?name.slice(0,dot):name}
 function loadDeviceSettings(){
@@ -343,7 +346,7 @@ function metadataLines(video){return(video.metadataLabels||[]).map(item=>`${item
 function renderList(){
   const videos=visibleVideos();
   let lastDevice=null,html='';const grouped=state.sortMode==='device',deviceCounts=new Map();if(grouped)for(const item of state.videos){const id=item.deviceId||'未识别设备';deviceCounts.set(id,(deviceCounts.get(id)||0)+1)}
-  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${formatTime(v.duration)}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${metadataBadges(v)}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
+  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${v.duration>0?formatTime(v.duration):'待播放'}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${metadataBadges(v)}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
   $('videoList').innerHTML=html||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
   document.querySelectorAll('.item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
   requestAnimationFrame(()=>document.querySelector('.item.active')?.scrollIntoView({block:'nearest'}));
@@ -382,7 +385,7 @@ async function loadCompatiblePreview(id){
     $('saveStatus').textContent=`兼容预览失败：${error.message}`;$('saveStatus').className='save error';
   }finally{if(token===state.previewToken)$('makeProxy').disabled=false}
 }
-function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);const metadata=metadataLines(video);if(metadata)details.push(`CSV 原始字段：\n${metadata}`);$('currentPath').textContent=details.join('\n');$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';renderList();updateDecision();loadCompatiblePreview(id)}
+function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);$('currentPath').textContent=details.join(' · ');$('currentPath').title=details.join('\n');$('currentMetadata').innerHTML=metadataBadges(video)||'<span>未关联原始标签，可在 CSV 设置中选择</span>';$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';renderList();updateDecision();loadCompatiblePreview(id)}
 function nextIdBeforeLabel(){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id);const following=ordered.find((v,index)=>index>currentIndex&&matchesFilters(v));return following?.id||ordered.find(v=>v.id!==state.current?.id&&matchesFilters(v))?.id}
 function saveLabel(label,goNext=true){
   if(!state.current||state.deciding)return state.saving;state.deciding=true;const id=state.current.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;renderList();updateDecision();
@@ -391,7 +394,7 @@ function saveLabel(label,goNext=true){
 }
 function clearLabel(){if(!state.current)return;const id=state.current.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=state.current.originLabel;if(origin)state.labels[id]=origin;else delete state.labels[id];renderList();updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];renderList();updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
 function moveVideo(delta){const list=visibleVideos();if(!list.length)return;const index=list.findIndex(v=>v.id===state.current?.id),target=Math.min(list.length-1,Math.max(0,index+delta));selectVideo(list[target].id)}
-function seek(delta){if(!state.current)return;player.pause();player.currentTime=Math.min(state.current.duration,Math.max(0,player.currentTime+delta))}
+function seek(delta){if(!state.current)return;const duration=Number.isFinite(player.duration)?player.duration:state.current.duration;if(!duration)return;player.pause();player.currentTime=Math.min(duration,Math.max(0,player.currentTime+delta))}
 function toggleLoop(){player.loop=!player.loop;$('loopVideo').classList.toggle('active',player.loop);renderPreferences()}
 function savePreferences(){try{localStorage.setItem(PREFERENCES_KEY,JSON.stringify(state.preferences))}catch{}}
 function renderPreferences(){const p=state.preferences;$('seekSeconds').value=p.seekSeconds;for(const [action,id] of Object.entries(SHORTCUT_FIELDS))$(id).value=displayKey(p.shortcuts[action]);for(const [action,id] of Object.entries(SHORTCUT_HINTS))$(id).textContent=displayKey(p.shortcuts[action]);$('seekHint').textContent=`±${p.seekSeconds} 秒`;$('markFall').textContent=`跌倒，并进入下一个（${displayKey(p.shortcuts.fall)}）`;$('markSafe').textContent=`不跌倒，并进入下一个（${displayKey(p.shortcuts.no_fall)}）`;$('markCaregiver').textContent=`护工 Fall，并进入下一个（${displayKey(p.shortcuts.caregiver_fall)}）`;$('playPause').textContent=`播放/暂停（${displayKey(p.shortcuts.play_pause)}）`;$('loopVideo').textContent=`${player.loop?'停止循环':'循环当前视频'}（${displayKey(p.shortcuts.loop)}）`;$('clearLabel').textContent=`撤销当前标签（${displayKey(p.shortcuts.clear_label)}）`;$('previous').textContent=`上一个（${displayKey(p.shortcuts.previous_video)}）`;$('next').textContent=`下一个（${displayKey(p.shortcuts.next_video)}）`}
@@ -473,6 +476,7 @@ $('resetPreferences').onclick=()=>{state.preferences=JSON.parse(JSON.stringify(D
 $('settingsButton').onclick=()=>{$('settingsDialog').showModal();setTimeout(()=>$('playShortcut').focus(),0)};
 document.querySelectorAll('.shortcut-input').forEach(input=>input.onkeydown=event=>{event.preventDefault();event.stopPropagation();if(event.ctrlKey||event.metaKey||event.altKey){alert('请直接按一个键，不要同时按 Ctrl、Command 或 Alt。');return}changeShortcut(input.dataset.action,event.key)});
 $('previous').onclick=()=>moveVideo(-1);$('next').onclick=()=>moveVideo(1);
+player.onloadedmetadata=()=>{if(state.current&&Number.isFinite(player.duration)){state.current.duration=player.duration;$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration)}`;renderList()}};
 player.ontimeupdate=()=>$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
 player.onerror=()=>{if(state.current&&player.currentSrc.includes('/proxy/'))setPreviewOverlay('兼容预览载入失败，请点击“重新加载兼容预览”','error')};
 $('makeProxy').onclick=()=>{if(state.current)loadCompatiblePreview(state.current.id)};

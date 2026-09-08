@@ -39,7 +39,7 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements-build.txt
       - name: Syntax checks
-        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py
+        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py app_runtime.py scan_support.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Build application

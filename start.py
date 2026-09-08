@@ -369,13 +369,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机；局域网共享可用 0.0.0.0")
     parser.add_argument("--port", type=int, help="网页端口；不提供时从 8765 开始自动选择空闲端口")
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    lifecycle = parser.add_mutually_exclusive_group()
+    lifecycle.add_argument("--close-on-tab-close", action="store_true", help="关闭最后一个审核页面后退出服务")
+    lifecycle.add_argument("--keep-running", action="store_true", help="关闭页面后继续保留后台服务")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if args.self_test:
-        required = ["launcher.html", "index.html", "quick_label.html"]
+        required = ["launcher.html", "index.html", "quick_label.html", "app.js", "layout.css"]
         missing = [name for name in required if not Path(__file__).with_name(name).is_file()]
         if missing:
             print(f"自检失败：缺少资源文件：{', '.join(missing)}", file=sys.stderr)
@@ -388,7 +391,30 @@ def main() -> int:
         if result.returncode != 0:
             print(f"自检失败：内置 FFmpeg 无法运行：{result.stderr}", file=sys.stderr)
             return 2
-        print("自检通过：页面资源和内置 FFmpeg 均可用。")
+        # Exercise bundled asset routing and windowed HTTP logging too.
+        from http.client import HTTPConnection
+        from threading import Thread
+        server = quick_labeler.LabelServer(("127.0.0.1", 0), None)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            for route in ("/", "/assets/app.js", "/assets/layout.css", "/api/runtime"):
+                connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                try:
+                    connection.request("GET", route)
+                    response = connection.getresponse()
+                    if response.status != 200 or not response.read():
+                        raise RuntimeError(f"页面资源无法访问：{route}")
+                finally:
+                    connection.close()
+        except Exception as exc:
+            print(f"自检失败：{exc}", file=sys.stderr)
+            return 2
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join()
+        print("自检通过：网页服务、页面资源和内置 FFmpeg 均可用。")
         return 0
     if args.port is None:
         args.port = choose_port(args.host)
@@ -397,7 +423,11 @@ def main() -> int:
     if args.host not in {"127.0.0.1", "localhost"}:
         print("提醒：当前服务允许其他设备访问，请只在可信局域网中使用。")
     remote_session = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("VSCODE_IPC_HOOK_CLI"))
-    browser_already_open = False
+    auto_close = args.close_on_tab_close or (
+        getattr(sys, "frozen", False) and not args.keep_running and not args.no_browser
+        and not remote_session and args.host in {"127.0.0.1", "localhost"}
+    )
+    selection = None
     if args.source:
         source = clean_path(args.source).resolve()
         defaults = default_outputs(source)
@@ -410,53 +440,32 @@ def main() -> int:
         }
     elif args.no_gui:
         selection = choose_in_terminal()
-    else:
-        try:
-            selection = run_launcher(
-                args.host,
-                args.port,
-                load_settings(),
-                Path(__file__).with_name("launcher.html"),
-                save_settings,
-                open_browser=not args.no_browser and not remote_session,
+    def prepare_project(project, progress):
+        progress("检查视频组件", 0, None, "正在检查 FFmpeg")
+        reviewer.ffmpeg_executable()
+        source = Path(project["source"])
+        print(f"本次项目：{source}（只扫描第一层）", flush=True)
+        if project["mode"] == "label":
+            app = quick_labeler.LabelApp(
+                source, Path(project["fall_output"]), Path(project["no_fall_output"]),
+                Path(project["caregiver_fall_output"]), reviewer.user_cache_dir("label-preview"), progress,
             )
-            browser_already_open = selection is not None
-        except OSError as exc:
-            print(f"无法启动项目选择页面（{exc}），改用终端输入。")
-            selection = choose_in_terminal()
-        if selection is None:
-            print("已取消启动。")
-            return 0
+            return app, quick_labeler.LabelHandler
+        app = reviewer.ReviewApp(
+            source, Path(project["output"]), Path(project["no_fall_output"]),
+            reviewer.user_cache_dir("clip-preview"), progress,
+        )
+        return app, reviewer.ReviewHandler
 
-    source = Path(selection["source"])
-    mode = selection["mode"]
-    if not source.is_dir():
-        print(f"错误：项目目录不存在：{source}", file=sys.stderr)
-        return 2
-    print("\n本次任务目录（仅扫描项目目录第一层）：")
-    print(f"  项目目录：{source}")
-    if mode == "label":
-        fall_output = Path(selection["fall_output"])
-        no_fall_output = Path(selection["no_fall_output"])
-        caregiver_fall_output = Path(selection["caregiver_fall_output"])
-        print("  功能：整段 Fall 快速分类")
-        print(f"  Fall 输出：{fall_output}\n")
-        print(f"  不跌倒输出：{no_fall_output}\n")
-        print(f"  护工 Fall 输出：{caregiver_fall_output}\n")
-        sys.argv = [str(Path(quick_labeler.__file__).resolve()), "--source", str(source), "--output", str(fall_output), "--no-fall-output", str(no_fall_output), "--caregiver-output", str(caregiver_fall_output), "--host", args.host, "--port", str(args.port)]
-        if remote_session or args.no_browser or browser_already_open:
-            sys.argv.append("--no-browser")
-        return quick_labeler.main()
-
-    output = Path(selection["output"])
-    no_fall_output = Path(selection["no_fall_output"])
-    print("  功能：固定 8 秒片段审核")
-    print(f"  8 秒片段：{output}")
-    print(f"  全程无跌倒：{no_fall_output}\n")
-    sys.argv = [str(Path(reviewer.__file__).resolve()), "--source", str(source), "--output", str(output), "--no-fall-output", str(no_fall_output), "--host", args.host, "--port", str(args.port)]
-    if remote_session or args.no_browser or browser_already_open:
-        sys.argv.append("--no-browser")
-    return reviewer.main()
+    try:
+        run_launcher(
+            args.host, args.port, load_settings(), Path(__file__).with_name("launcher.html"),
+            save_settings, open_browser=not args.no_browser and not remote_session,
+            prepare_project=prepare_project, initial_selection=selection, auto_close=auto_close,
+        )
+    finally:
+        reviewer.stop_background_commands()
+    return 0
 
 
 if __name__ == "__main__":

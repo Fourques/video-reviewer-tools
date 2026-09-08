@@ -29,6 +29,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+from app_runtime import RuntimeHandlerMixin
+from scan_support import cached_durations
+
 
 CLIP_SECONDS = 8.0
 VIDEO_EXTENSIONS = {
@@ -38,6 +41,9 @@ VIDEO_EXTENSIONS = {
 APP_DIR = Path(__file__).resolve().parent
 INDEX_FILE = APP_DIR / "index.html"
 _FFMPEG_EXECUTABLE: str | None = None
+_COMMAND_LOCK = threading.Lock()
+_COMMANDS = set()
+_STOP_COMMANDS = threading.Event()
 
 
 def user_cache_dir(name: str) -> Path:
@@ -89,16 +95,35 @@ def run_command(args: list[str], timeout: float | None = None) -> subprocess.Com
     process_options: dict[str, Any] = {}
     if sys.platform == "win32":
         process_options["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return subprocess.run(
-        args,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-        check=False,
-        **process_options,
-    )
+    with _COMMAND_LOCK:
+        if _STOP_COMMANDS.is_set():
+            raise RuntimeError("工具正在退出")
+        process = subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, **process_options,
+        )
+        _COMMANDS.add(process)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+    except BaseException:
+        process.kill()
+        process.communicate()
+        raise
+    finally:
+        with _COMMAND_LOCK:
+            _COMMANDS.discard(process)
+
+
+def stop_background_commands():
+    """Called only on app exit, after any original-file export has completed."""
+    with _COMMAND_LOCK:
+        _STOP_COMMANDS.set()
+        for process in list(_COMMANDS):
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
 
 def ffprobe_duration(path: Path) -> float:
@@ -185,7 +210,8 @@ class Video:
 
 
 class ReviewApp:
-    def __init__(self, source: Path, output: Path, no_fall_output: Path, cache: Path) -> None:
+    def __init__(self, source: Path, output: Path, no_fall_output: Path, cache: Path, progress=None) -> None:
+        self.report = progress or (lambda *args: None)
         self.source = source.resolve()
         self.output = output.resolve()
         self.no_fall_output = no_fall_output.resolve()
@@ -231,8 +257,9 @@ class ReviewApp:
 
     def scan(self) -> None:
         paths: list[Path] = []
+        self.report("检索视频目录", 0, None, str(self.source))
         for path in self.source.iterdir():
-            if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            if path.suffix.lower() not in VIDEO_EXTENSIONS or not path.is_file():
                 continue
             resolved = path.resolve()
             if (
@@ -242,12 +269,13 @@ class ReviewApp:
             ):
                 continue
             paths.append(path)
+            if len(paths) % 100 == 0:
+                self.report("检索视频目录", len(paths), None, path.name)
         paths.sort(key=lambda item: str(item.relative_to(self.source)).casefold())
         videos: list[Video] = []
-        # A small pool keeps startup responsive on an SMB share without putting
-        # excessive concurrent load on the NAS.
-        with ThreadPoolExecutor(max_workers=min(6, max(1, len(paths)))) as pool:
-            durations = list(pool.map(ffprobe_duration, paths))
+        cache_key = hashlib.sha256(str(self.source).encode()).hexdigest()[:16]
+        durations = cached_durations(paths, self.cache / f"durations-{cache_key}.json", ffprobe_duration, self.report)
+        self.report("整理视频列表", 0, len(paths), "即将进入审核页面")
         for path, duration in zip(paths, durations):
             relative = path.relative_to(self.source).as_posix()
             identifier = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:20]
@@ -593,11 +621,11 @@ class ReviewApp:
                     path.unlink(missing_ok=True)
 
 
-class ReviewHandler(BaseHTTPRequestHandler):
+class ReviewHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
     server: "ReviewServer"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        if self.path.startswith(("/media/", "/proxy/")):
+        if sys.stderr is None or self.path.startswith(("/media/", "/proxy/", "/api/session")):
             return
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
@@ -617,6 +645,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.runtime_get():
+            return
         try:
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
@@ -664,6 +694,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.runtime_post():
+            return
         try:
             parsed = urlparse(self.path)
             data = self.read_json()

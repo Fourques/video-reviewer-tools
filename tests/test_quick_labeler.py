@@ -32,7 +32,7 @@ class QuickLabelMetadataTests(unittest.TestCase):
                 "online_yolo_alarm": "1", "haochen_alarm": "0", "score": "0.42",
             })
         duration_patch = patch("quick_labeler.ffprobe_duration", return_value=8.0)
-        duration_patch.start()
+        self.duration_probe = duration_patch.start()
         self.addCleanup(duration_patch.stop)
         self.app = LabelApp(
             self.source, self.root / "fall", self.root / "no_fall",
@@ -44,6 +44,7 @@ class QuickLabelMetadataTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_auto_detects_file_device_and_three_label_columns(self) -> None:
+        self.duration_probe.assert_not_called()
         info = self.app.metadata_info()
         video = self.app.public_videos()[0]
         self.assertEqual(info["metadataConfig"]["fileColumn"], "blurred_file")

@@ -13,7 +13,8 @@ class BackgroundCommandTests(unittest.TestCase):
         with patch("reviewer.sys.platform", "win32"), \
                 patch("reviewer.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True), \
                 patch("reviewer.ffmpeg_executable", return_value="C:/App/ffmpeg.exe"), \
-                patch("reviewer.subprocess.run") as launch:
+                patch("reviewer.subprocess.Popen") as launch:
+            launch.return_value.communicate.return_value = ("out", "err")
             run_command(["ffmpeg", "-version"], timeout=10)
         self.assertEqual(launch.call_args.args[0], ["C:/App/ffmpeg.exe", "-version"])
         options = launch.call_args.kwargs
@@ -21,10 +22,11 @@ class BackgroundCommandTests(unittest.TestCase):
         self.assertEqual(options["stdin"], subprocess.DEVNULL)
         self.assertEqual(options["stdout"], subprocess.PIPE)
         self.assertEqual(options["stderr"], subprocess.PIPE)
-        self.assertEqual(options["timeout"], 10)
+        launch.return_value.communicate.assert_called_once_with(timeout=10)
 
     def test_non_windows_does_not_receive_windows_options(self) -> None:
-        with patch("reviewer.sys.platform", "linux"), patch("reviewer.subprocess.run") as launch:
+        with patch("reviewer.sys.platform", "linux"), patch("reviewer.subprocess.Popen") as launch:
+            launch.return_value.communicate.return_value = ("", "")
             run_command(["example"])
         self.assertNotIn("creationflags", launch.call_args.kwargs)
 

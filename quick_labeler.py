@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
+from app_runtime import RuntimeHandlerMixin
+
 from reviewer import (
     VIDEO_EXTENSIONS, copy_file_bytes, ffmpeg_executable, ffprobe_duration,
     run_command, safe_json_write, user_cache_dir,
@@ -92,7 +94,8 @@ class Video:
 
 
 class LabelApp:
-    def __init__(self, source: Path, output: Path, no_fall_output: Path, caregiver_output: Path, cache: Path) -> None:
+    def __init__(self, source: Path, output: Path, no_fall_output: Path, caregiver_output: Path, cache: Path, progress=None) -> None:
+        self.report = progress or (lambda *args: None)
         self.source = source.expanduser().resolve()
         self.output = output.expanduser().resolve()
         self.no_fall_output = no_fall_output.expanduser().resolve()
@@ -119,6 +122,7 @@ class LabelApp:
         self.videos: list[Video] = []
         self.video_by_id: dict[str, Video] = {}
         self.proxy_jobs: dict[str, dict[str, Any]] = {}
+        self.closing = threading.Event()
         # Browser previews are short, but reviewers can advance faster than an
         # encode finishes. Keep conversion bounded so a run of quick labels
         # cannot create hundreds of simultaneous FFmpeg processes.
@@ -190,7 +194,7 @@ class LabelApp:
         for directory in [self.source, *list(self.source.parents)[:8]]:
             try:
                 candidates = sorted(
-                    (item for item in directory.iterdir() if item.is_file() and item.suffix.casefold() == ".csv"),
+                    (item for item in directory.iterdir() if item.suffix.casefold() == ".csv" and item.is_file()),
                     key=lambda item: item.name.casefold(),
                 )
             except (OSError, PermissionError):
@@ -221,6 +225,8 @@ class LabelApp:
                 try:
                     with candidate.open(encoding="utf-8-sig", newline="") as handle:
                         for index, row in enumerate(csv.DictReader(handle)):
+                            if index % 2000 == 0:
+                                self.report("匹配 CSV 字段", index, None, candidate.name)
                             if index >= 100_000:
                                 break
                             for column in file_candidates:
@@ -289,9 +295,14 @@ class LabelApp:
         try:
             with path.open(encoding="utf-8-sig", newline="") as handle:
                 reader = csv.DictReader(handle)
-                for row in reader:
+                for index, row in enumerate(reader):
+                    if index % 2000 == 0:
+                        self.report("读取原始标签", index, None, path.name)
+                    wanted_keys = [key for key in self._metadata_keys(str(row.get(file_column, ""))) if key in video_keys]
+                    if not wanted_keys:
+                        continue
                     clean_row = {str(key): str(value or "").strip() for key, value in row.items() if key is not None}
-                    for key in self._metadata_keys(clean_row.get(file_column, "")):
+                    for key in wanted_keys:
                         previous = mapping.get(key)
                         if previous is not None and previous != clean_row:
                             conflicts.add(key)
@@ -421,22 +432,32 @@ class LabelApp:
         scan_roots = [(self.source, *category_by_path.get(self.source, (None, "未分类")))]
         scan_roots.extend((directory, label, display) for directory, label, display in categories if directory != self.source)
         paths: list[tuple[Path, str | None, str]] = []
+        sizes: dict[Path, int] = {}
+        self.report("检索视频目录", 0, None, str(self.source))
         for directory, origin_label, display in scan_roots:
-            for path in directory.iterdir():
-                if path.is_symlink() or not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
-                    continue
-                paths.append((path, origin_label, display))
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if Path(entry.name).suffix.lower() not in VIDEO_EXTENSIONS or not entry.is_file(follow_symlinks=False):
+                        continue
+                    path = directory / entry.name
+                    sizes[path] = entry.stat().st_size
+                    paths.append((path, origin_label, display))
+                    if len(paths) % 100 == 0:
+                        self.report("检索视频目录", len(paths), None, display)
         paths.sort(key=lambda item: (item[1] or "", item[0].name.casefold()))
         video_keys = {
             key
             for path, _origin_label, _display in paths
             for key in (path.name.casefold(), path.stem.casefold())
         }
+        self.report("查找 CSV", len(paths), len(paths), "视频清单已就绪，正在关联设备和原始标签")
         self._load_metadata(video_keys)
-        with ThreadPoolExecutor(max_workers=min(6, max(1, len(paths)))) as pool:
-            durations = list(pool.map(ffprobe_duration, (item[0] for item in paths)))
         videos: list[Video] = []
-        for (path, origin_label, display), duration in zip(paths, durations):
+        # Whole-video classification does not need all durations up front.
+        # The browser reads the active preview's duration on loadedmetadata.
+        known_durations = {video.path: video.duration for video in self.videos}
+        for index, (path, origin_label, display) in enumerate(paths):
+            duration = known_durations.get(path, 0.0)
             if origin_label is None:
                 relative = path.relative_to(self.source).as_posix()
                 identity = relative  # Preserve IDs and progress from earlier versions.
@@ -448,12 +469,14 @@ class LabelApp:
             device_column = str(self.metadata_config.get("deviceColumn", ""))
             label_columns = [str(item) for item in self.metadata_config.get("labelColumns", [])]
             videos.append(Video(
-                identifier, path.resolve(), relative, path.name,
-                path.stat().st_size, duration, origin_label,
+                identifier, path, relative, path.name,
+                sizes[path], duration, origin_label,
                 str(row.get(device_column, "")) if row and device_column else "",
                 row is not None,
                 tuple((column, str(row.get(column, "")) if row else "") for column in label_columns),
             ))
+            if index % 100 == 0:
+                self.report("整理视频列表", index + 1, len(paths), path.name)
         with self.lock:
             self.videos = videos
             self.video_by_id = {video.id: video for video in videos}
@@ -512,6 +535,8 @@ class LabelApp:
             return dict(self.proxy_jobs.get(video_id, {"status": "idle"}))
 
     def _claim_proxy(self, video_id: str) -> str:
+        if self.closing.is_set():
+            return "stopped"
         self.get_video(video_id)
         if self.proxy_path(video_id).is_file() and self.proxy_path(video_id).stat().st_size > 0:
             return "ready"
@@ -583,6 +608,8 @@ class LabelApp:
         video_ids = [video.id for video in self.videos]
         ready = failed = 0
         for index, video_id in enumerate(video_ids, start=1):
+            if self.closing.is_set():
+                return
             try:
                 claimed = self._claim_proxy(video_id)
                 if claimed == "claimed":
@@ -697,11 +724,16 @@ class LabelApp:
                 self.export_job.update(status="error", message=str(exc))
 
 
-class LabelHandler(BaseHTTPRequestHandler):
+    def close(self):
+        self.closing.set()
+        self.proxy_executor.shutdown(wait=False, cancel_futures=True)
+
+
+class LabelHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
     server: "LabelServer"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        if self.path.startswith(("/media/", "/proxy/")):
+        if sys.stderr is None or self.path.startswith(("/media/", "/proxy/", "/api/session")):
             return
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
@@ -721,6 +753,8 @@ class LabelHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.runtime_get():
+            return
         try:
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
@@ -761,6 +795,8 @@ class LabelHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.runtime_post():
+            return
         try:
             parsed = urlparse(self.path)
             data = self.read_json()

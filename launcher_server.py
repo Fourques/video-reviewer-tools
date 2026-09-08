@@ -7,12 +7,15 @@ import json
 import os
 import string
 import threading
+import time
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
+
+from app_runtime import AppRuntime, RuntimeHandlerMixin
 
 
 def _directory_roots() -> list[str]:
@@ -121,12 +124,42 @@ class LauncherApp:
 class LauncherServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], app: LauncherApp) -> None:
+    def __init__(self, address: tuple[str, int], app: LauncherApp, prepare_project=None, auto_close=False) -> None:
         super().__init__(address, LauncherHandler)
         self.app = app
+        self.launcher_app = app
+        self.prepare_project = prepare_project
+        self.runtime = AppRuntime(auto_close)
+        self.start_lock = threading.Lock()
+
+    def start_selection(self, selection):
+        if not self.start_lock.acquire(blocking=False):
+            raise ValueError("正在检索视频，请等待当前扫描完成")
+        self.runtime.report("准备项目", 0, None, selection["source"])
+
+        def prepare():
+            try:
+                app, handler = self.prepare_project(selection, self.runtime.report)
+                if self.runtime.stopped.is_set():
+                    close = getattr(app, "close", None)
+                    if close:
+                        close()
+                    return
+                self.app = app
+                self.RequestHandlerClass = handler
+                with self.runtime.lock:
+                    self.runtime.progress = {"status": "ready", "stage": "检索完成", "done": len(app.videos), "total": len(app.videos), "message": "即将进入审核页面"}
+                print(f"已找到 {len(app.videos)} 个视频，审核页面已就绪。", flush=True)
+            except Exception as exc:
+                with self.runtime.lock:
+                    self.runtime.progress.update(status="error", stage="检索失败", message=str(exc))
+                print(f"项目启动失败：{exc}", flush=True)
+            finally:
+                self.start_lock.release()
+        threading.Thread(target=prepare, daemon=True, name="project-scan").start()
 
 
-class LauncherHandler(BaseHTTPRequestHandler):
+class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
     server: LauncherServer
 
     def _json(self, value: Any, status: int = HTTPStatus.OK) -> None:
@@ -139,9 +172,11 @@ class LauncherHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.runtime_get():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/launcher"}:
-            body = self.server.app.html
+            body = self.server.launcher_app.html
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -150,12 +185,12 @@ class LauncherHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path == "/api/config":
-            self._json(self.server.app.config())
+            self._json(self.server.launcher_app.config())
             return
         if parsed.path == "/api/directories":
             try:
                 value = parse_qs(parsed.query).get("path", [""])[0]
-                self._json(self.server.app.directories(value))
+                self._json(self.server.launcher_app.directories(value))
             except (OSError, ValueError) as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -166,6 +201,8 @@ class LauncherHandler(BaseHTTPRequestHandler):
         self._json({"error": "Not Found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.runtime_post():
+            return
         route = urlparse(self.path).path
         if route == "/api/quit":
             self._json({"ok": True})
@@ -177,11 +214,11 @@ class LauncherHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
-            selection = self.server.app.validate_selection(payload)
-            self.server.app.save_selection(selection)
-            self.server.app.selection = selection
+            selection = self.server.launcher_app.validate_selection(payload)
+            self.server.launcher_app.save_selection(selection)
+            self.server.launcher_app.selection = selection
+            self.server.start_selection(selection)
             self._json({"ok": True, "message": "正在扫描视频，审核页面准备好后会自动进入。"})
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -196,19 +233,30 @@ def run_launcher(
     html_path: Path,
     save_selection: Callable[[dict[str, str]], None],
     open_browser: bool,
-) -> dict[str, str] | None:
+    prepare_project: Callable,
+    initial_selection=None,
+    auto_close=False,
+) -> None:
     app = LauncherApp(settings, html_path, save_selection)
-    server = LauncherServer((host, port), app)
+    server = LauncherServer((host, port), app, prepare_project, auto_close)
     shown_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{shown_host}:{port}"
     print(f"项目选择页面：{url}", flush=True)
     print("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。", flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url, new=2)).start()
+    server.runtime.watch(server)
+    if initial_selection:
+        server.start_selection(initial_selection)
     try:
         server.serve_forever(poll_interval=0.1)
     except KeyboardInterrupt:
         return None
     finally:
+        server.runtime.stopped.set()
         server.server_close()
-    return app.selection
+        while getattr(server.app, "export_job", {}).get("status") == "running":
+            time.sleep(0.2)
+        close = getattr(server.app, "close", None)
+        if close:
+            close()

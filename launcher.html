@@ -9,10 +9,12 @@
 .field{grid-template-columns:130px minmax(0,1fr) auto}
 @media(max-width:680px){.field{grid-template-columns:1fr auto}.field>span{grid-column:1/-1}}
 </style>
+<link rel="stylesheet" href="/assets/layout.css">
+<script src="/assets/app.js" defer></script>
 </head>
 <body>
 <main class="page">
-  <h1>视频审核项目中心 <span style="font-size:13px;color:var(--muted);font-weight:500">v1.4.1</span></h1>
+  <h1>视频审核项目中心 <span style="font-size:13px;color:var(--muted);font-weight:500">v1.5.0</span></h1>
   <p class="lead">选择项目后进入审核页面。所有数据都在运行脚本的电脑或服务器上处理。</p>
 
   <section class="card">
@@ -47,6 +49,12 @@
     <p class="hint">快速分类会同时读取项目目录和三个分类目录的第一层。三个分类目录可分别放在任意位置；上级目录存在 candidates.csv 时会自动关联真实设备 ID。</p>
   </section>
 
+  <section id="scanPanel" class="card scan-card" hidden aria-live="polite">
+    <div class="scan-heading"><h2 id="scanStage">正在检索视频</h2><span id="scanCount" class="scan-count">准备中</span></div>
+    <progress id="scanProgress" class="scan-progress" max="100" aria-label="当前扫描阶段进度"></progress>
+    <div id="scanDetail" class="scan-detail"></div>
+    <div class="scan-footer"><span>检索完成后自动进入审核页面</span><span id="scanElapsed">已用时 0 秒</span></div>
+  </section>
   <div class="actions">
     <div class="row"><button id="defaults" class="secondary">恢复默认输出</button><button id="quitTool" class="secondary">退出工具</button></div>
     <div id="status" class="status"></div>
@@ -76,7 +84,7 @@ function applyProject(source,useSaved=true){source=source.trim();if(!source)retu
 function showMode(){const label=mode()==='label';$('clipOutputs').hidden=label;$('labelOutputs').hidden=!label}
 async function api(url,options){const response=await fetch(url,options);let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.error||`请求失败 ${response.status}`);return data}
 async function loadFolder(path){try{const data=await api('/api/directories?'+new URLSearchParams({path}));currentFolder=data.path;$('folderPath').value=data.path;const list=$('folderList');list.textContent='';if(data.parent){const b=document.createElement('button');b.className='folder';b.textContent='..  上一级';b.onclick=()=>loadFolder(data.parent);list.appendChild(b)}for(const item of data.directories){const b=document.createElement('button');b.className='folder';b.textContent=item.name;b.title=item.path;b.onclick=()=>loadFolder(item.path);list.appendChild(b)}if(!data.parent&&!data.directories.length)list.innerHTML='<div class="empty">没有可进入的子目录</div>';if(data.truncated)list.insertAdjacentHTML('beforeend','<div class="empty">目录过多，只显示前 1000 个</div>')}catch(error){setStatus(error.message,'error')}}
-async function init(){config=await api('/api/config');for(const path of config.recentProjects||[]){const option=document.createElement('option');option.value=path;option.textContent=path;$('recent').appendChild(option)}const roots=$('roots');for(const path of config.roots||[]){const b=document.createElement('button');b.textContent=path;b.onclick=()=>loadFolder(path);roots.appendChild(b)}if(config.recentProjects?.length){applyProject(config.recentProjects[0])}else{document.querySelector(`input[name=mode][value="${config.lastMode||'clip'}"]`).checked=true;showMode()}}
+async function init(){const startup=await api('/api/startup-status');if(startup.status==='scanning'||startup.status==='ready'){waitForReviewer();return}config=await api('/api/config');$('recent').innerHTML='<option value="">最近使用的项目…</option>';for(const path of config.recentProjects||[]){const option=document.createElement('option');option.value=path;option.textContent=path;$('recent').appendChild(option)}const roots=$('roots');roots.textContent='';for(const path of config.roots||[]){const b=document.createElement('button');b.textContent=path;b.onclick=()=>loadFolder(path);roots.appendChild(b)}if(config.recentProjects?.length){applyProject(config.recentProjects[0])}else{document.querySelector(`input[name=mode][value="${config.lastMode||'clip'}"]`).checked=true;showMode()}if(startup.status==='error')setStatus(startup.message,'error')}
 $('recent').onchange=event=>{if(event.target.value)applyProject(event.target.value)};
 $('source').onblur=()=>{const value=$('source').value.trim();if(value&&value!==loadedSource)applyProject(value)};
 for(const radio of document.querySelectorAll('input[name=mode]'))radio.onchange=showMode;
@@ -90,7 +98,21 @@ $('folderPath').onkeydown=event=>{if(event.key==='Enter')loadFolder(event.target
 $('selectFolder').onclick=()=>{if(browseTarget==='source')applyProject(currentFolder);else $(browseTarget).value=currentFolder;$('modal').classList.remove('show')};
 $('modal').onclick=event=>{if(event.target===$('modal'))$('modal').classList.remove('show')};
 $('start').onclick=async()=>{let source=$('source').value.trim();if(!source){setStatus('请先选择项目目录','error');return}if(source!==loadedSource)applyProject(source);const payload={source,mode:mode(),output:$('output').value,no_fall_output:mode()==='label'?$('labelNoFallOutput').value:$('noFallOutput').value,fall_output:$('fallOutput').value,caregiver_fall_output:$('caregiverFallOutput').value};$('start').disabled=true;try{const data=await api('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});setStatus(data.message,'good');waitForReviewer()}catch(error){$('start').disabled=false;setStatus(error.message,'error')}};
-async function waitForReviewer(){for(;;){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/api/videos',{cache:'no-store'});if(response.ok){location.replace('/?project_started='+Date.now());return}}catch{}}}
+async function waitForReviewer(){
+  document.body.classList.add('scanning');$('scanPanel').hidden=false;const began=Date.now();
+  for(;;){
+    try{
+      const data=await api('/api/startup-status');
+      $('scanStage').textContent=data.stage||'准备中';$('scanDetail').textContent=data.message||'';
+      $('scanElapsed').textContent=`已用时 ${Math.floor((Date.now()-began)/1000)} 秒`;
+      if(data.total>0){$('scanProgress').value=Math.min(100,data.done/data.total*100);$('scanCount').textContent=`${data.done} / ${data.total}`}
+      else{$('scanProgress').removeAttribute('value');$('scanCount').textContent=data.done?`已处理 ${data.done}`:'准备中'}
+      if(data.status==='ready'){location.replace('/?project_started='+Date.now());return}
+      if(data.status==='error'){document.body.classList.remove('scanning');$('start').disabled=false;setStatus(data.message,'error');if(!config.home)await init();return}
+    }catch(error){$('scanDetail').textContent='连接暂时中断，正在重连… '+error.message}
+    await new Promise(resolve=>setTimeout(resolve,400));
+  }
+}
 init().catch(error=>setStatus(error.message,'error'));
 </script>
 </body>
