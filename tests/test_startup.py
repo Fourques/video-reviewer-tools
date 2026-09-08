@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import threading
 import time
@@ -10,13 +11,21 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.request import Request, ProxyHandler, build_opener
 
-from app_runtime import AppRuntime
+from app_runtime import AppRuntime, safe_log
 from launcher_server import LauncherApp, LauncherServer
 from quick_labeler import LabelHandler
 from scan_support import cached_durations
 
 
 class LifetimeTests(unittest.TestCase):
+    def test_logging_on_non_chinese_windows_codepage(self):
+        data = io.BytesIO()
+        stream = io.TextIOWrapper(data, encoding="cp1252")
+        with patch("app_runtime.sys.stdout", stream):
+            safe_log("视频目录检索完成")
+        self.assertIn(b"\\u", data.getvalue())
+        stream.detach()
+
     def test_last_tab_close_has_grace_and_refresh_cancels_exit(self):
         runtime = AppRuntime(True, grace=8)
         runtime.enter("first")

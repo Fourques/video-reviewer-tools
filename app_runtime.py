@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -9,6 +10,22 @@ from urllib.parse import parse_qs, urlparse
 
 
 ASSETS = Path(__file__).resolve().parent
+
+
+def safe_log(message):
+    """Diagnostic output must not break HTTP on non-Chinese Windows systems."""
+    stream = sys.stdout
+    if stream is None:
+        return
+    try:
+        try:
+            stream.write(message + "\n")
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            stream.write((message + "\n").encode(encoding, errors="backslashreplace").decode(encoding))
+        stream.flush()
+    except OSError:
+        pass
 
 
 class AppRuntime:

@@ -47,3 +47,8 @@ class BackgroundCommandTests(unittest.TestCase):
         ], timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "False")
+
+    def test_unexpected_diagnostic_encoding_does_not_abort(self):
+        result = run_command([sys.executable, "-c", "import sys; sys.stderr.buffer.write(bytes([255]))"], timeout=15)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, "\ufffd")

@@ -100,7 +100,7 @@ def run_command(args: list[str], timeout: float | None = None) -> subprocess.Com
             raise RuntimeError("工具正在退出")
         process = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, **process_options,
+            text=True, encoding="utf-8", errors="replace", **process_options,
         )
         _COMMANDS.add(process)
     try:

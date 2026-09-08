@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from app_runtime import AppRuntime, RuntimeHandlerMixin
+from app_runtime import AppRuntime, RuntimeHandlerMixin, safe_log
 
 
 def _directory_roots() -> list[str]:
@@ -149,11 +149,11 @@ class LauncherServer(ThreadingHTTPServer):
                 self.RequestHandlerClass = handler
                 with self.runtime.lock:
                     self.runtime.progress = {"status": "ready", "stage": "检索完成", "done": len(app.videos), "total": len(app.videos), "message": "即将进入审核页面"}
-                print(f"已找到 {len(app.videos)} 个视频，审核页面已就绪。", flush=True)
+                safe_log(f"已找到 {len(app.videos)} 个视频，审核页面已就绪。")
             except Exception as exc:
                 with self.runtime.lock:
                     self.runtime.progress.update(status="error", stage="检索失败", message=str(exc))
-                print(f"项目启动失败：{exc}", flush=True)
+                safe_log(f"项目启动失败：{exc}")
             finally:
                 self.start_lock.release()
         threading.Thread(target=prepare, daemon=True, name="project-scan").start()
@@ -223,7 +223,7 @@ class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def log_message(self, format_string: str, *args: object) -> None:
-        print(f"[项目中心] {format_string % args}", flush=True)
+        safe_log(f"[项目中心] {format_string % args}")
 
 
 def run_launcher(
@@ -241,8 +241,8 @@ def run_launcher(
     server = LauncherServer((host, port), app, prepare_project, auto_close)
     shown_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     url = f"http://{shown_host}:{port}"
-    print(f"项目选择页面：{url}", flush=True)
-    print("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。", flush=True)
+    safe_log(f"项目选择页面：{url}")
+    safe_log("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。")
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url, new=2)).start()
     server.runtime.watch(server)

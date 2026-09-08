@@ -63,7 +63,7 @@ if sys.platform == "darwin":
         name="VideoReviewer.app",
         icon=None,
         bundle_identifier="com.fourques.video-reviewer",
-        version="1.5.0",
+        version="1.5.1",
         info_plist={
             "CFBundleDisplayName": "视频人工审核工具",
             "NSHighResolutionCapable": True,

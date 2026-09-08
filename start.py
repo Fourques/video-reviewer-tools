@@ -376,6 +376,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     args = parse_args()
     if args.self_test:
         required = ["launcher.html", "index.html", "quick_label.html", "app.js", "layout.css"]
