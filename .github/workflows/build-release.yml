@@ -43,7 +43,7 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Playback regression tests
-        run: node --test tests/playback.test.cjs
+        run: node --test tests/playback.test.cjs tests/app-lifetime.test.cjs
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
       - name: Verify bundled FFmpeg and startup (Windows)

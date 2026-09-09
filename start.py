@@ -426,10 +426,9 @@ def main() -> int:
     if args.host not in {"127.0.0.1", "localhost"}:
         print("提醒：当前服务允许其他设备访问，请只在可信局域网中使用。")
     remote_session = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("VSCODE_IPC_HOOK_CLI"))
-    auto_close = args.close_on_tab_close or (
-        getattr(sys, "frozen", False) and not args.keep_running and not args.no_browser
-        and not remote_session and args.host in {"127.0.0.1", "localhost"}
-    )
+    # Source, packaged and remote launches share the same page lifetime.
+    # --no-browser controls opening a browser, not keeping a service alive.
+    auto_close = not args.keep_running
     selection = None
     if args.source:
         source = clean_path(args.source).resolve()

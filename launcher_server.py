@@ -243,8 +243,14 @@ def run_launcher(
     url = f"http://{shown_host}:{port}"
     safe_log(f"项目选择页面：{url}")
     safe_log("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。")
+    browser_timer = None
     if open_browser:
-        threading.Timer(0.4, lambda: webbrowser.open(url, new=2)).start()
+        def open_if_running():
+            if not server.runtime.stopped.is_set():
+                webbrowser.open(url, new=2)
+        browser_timer = threading.Timer(0.4, open_if_running)
+        browser_timer.daemon = True
+        browser_timer.start()
     server.runtime.watch(server)
     if initial_selection:
         server.start_selection(initial_selection)
@@ -254,6 +260,8 @@ def run_launcher(
         return None
     finally:
         server.runtime.stopped.set()
+        if browser_timer:
+            browser_timer.cancel()
         server.server_close()
         while getattr(server.app, "export_job", {}).get("status") == "running":
             time.sleep(0.2)

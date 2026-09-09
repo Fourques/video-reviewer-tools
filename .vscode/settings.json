@@ -5,7 +5,7 @@
   "remote.portsAttributes": {
     "8765-8864": {
       "label": "视频人工审核工具",
-      "onAutoForward": "openBrowserOnce",
+      "onAutoForward": "silent",
       "requireLocalPort": false,
       "protocol": "http"
     }
