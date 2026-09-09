@@ -6,10 +6,19 @@ import sys
 import threading
 import time
 from pathlib import Path
+from http.server import ThreadingHTTPServer
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlparse
 
 
 ASSETS = Path(__file__).resolve().parent
+
+
+class LocalHTTPServer(ThreadingHTTPServer):
+    """Bind immediately without a reverse DNS lookup of the listening address."""
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def safe_log(message):

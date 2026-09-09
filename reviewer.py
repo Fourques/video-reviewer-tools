@@ -24,12 +24,12 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from app_runtime import RuntimeHandlerMixin
+from app_runtime import LocalHTTPServer, RuntimeHandlerMixin
 from scan_support import cached_durations
 
 
@@ -789,7 +789,7 @@ class ReviewHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
 
-class ReviewServer(ThreadingHTTPServer):
+class ReviewServer(LocalHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], app: ReviewApp) -> None:

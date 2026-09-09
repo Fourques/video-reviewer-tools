@@ -10,12 +10,12 @@ import threading
 import time
 import webbrowser
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from app_runtime import AppRuntime, RuntimeHandlerMixin, safe_log
+from app_runtime import AppRuntime, LocalHTTPServer, RuntimeHandlerMixin, safe_log
 
 
 def _directory_roots() -> list[str]:
@@ -121,7 +121,7 @@ class LauncherApp:
         }
 
 
-class LauncherServer(ThreadingHTTPServer):
+class LauncherServer(LocalHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], app: LauncherApp, prepare_project=None, auto_close=False) -> None:

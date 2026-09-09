@@ -18,12 +18,12 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from app_runtime import RuntimeHandlerMixin
+from app_runtime import LocalHTTPServer, RuntimeHandlerMixin
 
 from reviewer import (
     VIDEO_EXTENSIONS, copy_file_bytes, ffmpeg_executable, ffprobe_duration,
@@ -892,7 +892,7 @@ class LabelHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
                 remaining -= len(chunk)
 
 
-class LabelServer(ThreadingHTTPServer):
+class LabelServer(LocalHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], app: LabelApp) -> None:

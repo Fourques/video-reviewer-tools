@@ -11,9 +11,20 @@ from urllib.request import build_opener, ProxyHandler, Request
 from unittest.mock import patch
 
 import start
+from app_runtime import LocalHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 
 class LaunchLifetimeTests(unittest.TestCase):
+    def test_binding_does_not_wait_for_reverse_dns(self):
+        with patch('socket.getfqdn', side_effect=AssertionError('No DNS needed')):
+            server = LocalHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
+            try:
+                self.assertEqual(server.server_name, '127.0.0.1')
+                self.assertGreater(server.server_port, 0)
+            finally:
+                server.server_close()
+
     def test_remote_cli_releases_port_after_last_page_closes(self):
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0))
