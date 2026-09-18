@@ -32,17 +32,25 @@
     .path,.meta,.status { color:var(--muted); font-size:12px; word-break:break-all; white-space:pre-wrap; }
     .filters { display:flex; gap:7px; flex-wrap:wrap; margin-top:10px; }
     .filters input { flex:1 0 100%; min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
+    /* The sidebar is a fixed 300px wide, so the three label filters get one shared
+       row instead of wrapping: they size down together, with no clipped text. */
+    .filters .filter-row { display:flex; flex:1 0 100%; gap:7px; }
+    .filters .filter-row button { flex:1 1 auto; min-width:0; padding:6px 5px; font-size:12px; white-space:nowrap; }
     .device-tools { display:grid; gap:6px; margin-top:10px; padding:9px; background:#0f1319; border:1px solid #303744; border-radius:9px; }
     .device-query { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:6px; }
     .device-query input { min-width:0; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:7px; }
-    .device-actions { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; }
-    .device-actions button { overflow:hidden; padding:6px 5px; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+    .device-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
+    .device-actions #deviceRule { grid-column:1/-1; }
+    .device-actions button { padding:6px 5px; font-size:12px; }
     .device-status { min-height:17px; color:var(--muted); font-size:12px; word-break:break-all; }
     .device-status.active { color:#9fd0ff; }
     .list { flex:1; min-height:80px; overflow:auto; }
     .item { padding:10px 13px; border-bottom:1px solid #272d37; cursor:pointer; }
     .item:hover,.item.active { background:#222934; }
     .item.active { border-left:3px solid var(--accent); padding-left:10px; }
+    /* A labelled clip that no longer matches the filter is hidden in place: the list
+       is not rebuilt, so J/K/L keeps switching instantly. */
+    .item.filtered { display:none; }
     .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .item-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; color:var(--muted); font-size:12px; }
     .device-group { position:sticky; top:0; z-index:1; padding:6px 12px; color:#b8c5d8; background:#111923f2; border-bottom:1px solid #334052; font-size:12px; }
@@ -114,14 +122,16 @@
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.2</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.3</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
           <input id="search" placeholder="在当前列表内搜索文件名">
-          <button id="pendingOnly">显示全部</button>
-          <button id="fallOnly">仅看跌倒</button>
-          <button id="caregiverOnly">仅看护工 Fall</button>
+          <div class="filter-row">
+            <button id="pendingOnly">显示全部</button>
+            <button id="fallOnly">仅看跌倒</button>
+            <button id="caregiverOnly">仅看护工 Fall</button>
+          </div>
         </div>
         <div class="device-tools">
           <div class="device-query">
@@ -280,7 +290,7 @@ const DEFAULT_DEVICE_RULE={mode:'auto',delimiter:'_',fieldIndex:2,regex:''};
 const LAYOUT_KEY='videoReviewer.quickLabel.layout.v1';
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function loadLayout(){try{return{toolsCollapsed:false,actionsCollapsed:true,...JSON.parse(localStorage.getItem(LAYOUT_KEY)||'{}')}}catch{return{toolsCollapsed:false,actionsCollapsed:true}}}
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',output:'',noFallOutput:'',caregiverOutput:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0,metadataConfig:{},metadataColumns:[],detectedCsvs:[]};
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',output:'',noFallOutput:'',caregiverOutput:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0,metadataConfig:{},metadataColumns:[],detectedCsvs:[],searchQuery:'',dataVersion:0};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
@@ -330,7 +340,7 @@ function ruleDeviceId(video,learnedIds){
   const repeated=stem.split('_').map(value=>state.autoDeviceTokens.get(value.trim().toLowerCase())).filter(Boolean).sort((a,b)=>{const aShape=/\d|[^a-z]/i.test(a.value)?1:0,bShape=/\d|[^a-z]/i.test(b.value)?1:0;return bShape-aShape||b.value.length-a.value.length||a.count-b.count});
   return repeated[0]?.value||fieldValue;
 }
-function applyDeviceIds(){state.autoDeviceField=inferAutoDeviceField(state.videos);state.autoDeviceTokens=inferRepeatedDeviceTokens(state.videos);const learned=[...state.learnedDeviceIds].sort((a,b)=>b.length-a.length);for(const video of state.videos)video.deviceId=video.metadataDeviceId||ruleDeviceId(video,learned)}
+function applyDeviceIds(){state.autoDeviceField=inferAutoDeviceField(state.videos);state.autoDeviceTokens=inferRepeatedDeviceTokens(state.videos);const learned=[...state.learnedDeviceIds].sort((a,b)=>b.length-a.length);for(const video of state.videos)video.deviceId=video.metadataDeviceId||ruleDeviceId(video,learned);state.dataVersion++}
 function adoptVideos(videos){state.videos=videos;state.labels={};for(const video of videos)if(video.label)state.labels[video.id]=video.label;applyDeviceIds()}
 function adoptVideoResponse(data){state.source=data.source||state.source;state.output=data.output||state.output;state.noFallOutput=data.noFallOutput||state.noFallOutput;state.caregiverOutput=data.caregiverOutput||state.caregiverOutput;state.metadataCsv=data.metadataCsv||'';state.metadataMatched=Number(data.metadataMatched)||0;state.metadataConflicts=Number(data.metadataConflicts)||0;state.metadataConfig=data.metadataConfig||{};state.metadataColumns=data.metadataColumns||[];state.detectedCsvs=data.detectedCsvs||[];adoptVideos(data.videos||[])}
 function deviceEntries(){
@@ -338,8 +348,9 @@ function deviceEntries(){
   return [...counts].map(([id,count])=>({id,count})).sort((a,b)=>collator.compare(a.id,b.id));
 }
 function deviceMatches(v,query=state.deviceQuery,exact=state.deviceExact){const q=query.trim().toLowerCase();if(!q)return true;return exact?v.deviceId?.toLowerCase()===q:v.relative.toLowerCase().includes(q)}
-function matchesFilters(v){const q=$('search').value.trim().toLowerCase();return deviceMatches(v)&&(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||state.labels[v.id]==='fall')&&(!state.caregiverOnly||state.labels[v.id]==='caregiver_fall')}
-function orderedVideos(){if(state.sortMode!=='device')return [...state.videos];return [...state.videos].sort((a,b)=>{const ad=a.deviceId||'\uffff',bd=b.deviceId||'\uffff';return collator.compare(ad,bd)||collator.compare(a.name,b.name)})}
+function matchesFilters(v){const q=state.searchQuery;return deviceMatches(v)&&(!q||v.relative.toLowerCase().includes(q))&&(!state.pendingOnly||!state.labels[v.id])&&(!state.fallOnly||state.labels[v.id]==='fall')&&(!state.caregiverOnly||state.labels[v.id]==='caregiver_fall')}
+let orderCache={key:'',rows:[]};
+function orderedVideos(){const key=`${state.dataVersion}:${state.sortMode}`;if(orderCache.key===key)return orderCache.rows;orderCache={key,rows:state.sortMode!=='device'?[...state.videos]:[...state.videos].sort((a,b)=>{const ad=a.deviceId||'\uffff',bd=b.deviceId||'\uffff';return collator.compare(ad,bd)||collator.compare(a.name,b.name)})};return orderCache.rows}
 function visibleVideos(){return orderedVideos().filter(v=>v.id===state.current?.id||matchesFilters(v))}
 function updateDeviceUi(){
   const entries=deviceEntries(),input=$('deviceSearch').value.trim().toLowerCase(),suggestions=entries.filter(entry=>!input||entry.id.toLowerCase().includes(input)).slice(0,50);
@@ -351,18 +362,55 @@ function updateDeviceUi(){
   if(state.deviceQuery){const matches=state.videos.filter(v=>deviceMatches(v)),done=matches.filter(v=>state.labels[v.id]).length;$('deviceStatus').textContent=`设备查询：${state.deviceQuery} · ${matches.length} 个视频 · 已判断 ${done} · 待判断 ${matches.length-done}`;$('deviceStatus').classList.add('active')}
   else{const inferred=state.deviceRule.mode==='auto'?(state.autoDeviceField?`自动字段“${state.autoDeviceField.delimiter}”第 ${state.autoDeviceField.index+1} 段`:'自动规则暂未找到重复字段'):state.deviceRule.mode==='field'?`按“${state.deviceRule.delimiter}”第 ${state.deviceRule.fieldIndex} 段`:'按正则表达式';$('deviceStatus').textContent=state.metadataCsv?`CSV 已匹配 ${state.metadataMatched}/${state.videos.length} 个视频 · ${entries.length} 个设备${state.metadataConflicts?` · ${state.metadataConflicts} 个重名冲突`:''}`:`识别到 ${entries.length} 个设备 · ${inferred}`;$('deviceStatus').classList.remove('active')}
 }
-function metadataBadges(video){return(video.metadataLabels||[]).map(item=>`<span class="badge metadata">${escapeHtml(item.column)}：${escapeHtml(item.value||'—')}</span>`).join('')}
+function metadataBadges(video){return(video.metadataLabels||[]).map(item=>{const text=`${item.column}：${item.value||'—'}`;return `<span class="badge metadata" title="${escapeHtml(text)}">${escapeHtml(text)}</span>`}).join('')}
 function metadataLines(video){return(video.metadataLabels||[]).map(item=>`${item.column}：${item.value||'—'}`).join('\n')}
+function itemInner(v){
+  const label=state.labels[v.id],changed=v.originLabel&&label&&v.originLabel!==label;
+  return `<div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${v.duration>0?formatTime(v.duration):'待播放'}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${metadataBadges(v)}${label==='fall'?'<span class="badge fall">跌倒</span>':label==='no_fall'?'<span class="badge safe">不跌倒</span>':label==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div>`;
+}
+function itemHtml(v){return `<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}">${itemInner(v)}</div>`}
+const itemElements=new Map();
+let activeItem=null;
+function scrollActiveIntoView(){
+  if(!activeItem)return;
+  const box=$('videoList').getBoundingClientRect(),target=activeItem.getBoundingClientRect();
+  if(target.top<box.top||target.bottom>box.bottom)activeItem.scrollIntoView({block:'nearest'});
+}
+function updateSummary(){
+  const currentLabels=state.videos.map(v=>state.labels[v.id]),fall=currentLabels.filter(v=>v==='fall').length,safe=currentLabels.filter(v=>v==='no_fall').length,caregiver=currentLabels.filter(v=>v==='caregiver_fall').length;
+  $('summary').textContent=`共 ${state.videos.length} 个；已判断 ${fall+safe+caregiver}；跌倒 ${fall}；不跌倒 ${safe}；护工 Fall ${caregiver}；待判断 ${state.videos.length-fall-safe-caregiver}`;
+}
 function renderList(){
   const videos=visibleVideos();
   let lastDevice=null,html='';const grouped=state.sortMode==='device',deviceCounts=new Map();if(grouped)for(const item of state.videos){const id=item.deviceId||'未识别设备';deviceCounts.set(id,(deviceCounts.get(id)||0)+1)}
-  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}const changed=v.originLabel&&state.labels[v.id]&&v.originLabel!==state.labels[v.id];html+=`<div class="item ${state.current?.id===v.id?'active':''}" data-id="${v.id}"><div class="name" title="${escapeHtml(v.relative)}">${escapeHtml(v.name)}</div><div class="item-meta"><span>${v.duration>0?formatTime(v.duration):'待播放'}</span><span>${formatSize(v.size)}</span>${v.deviceId?`<span class="badge" title="设备 ID">${escapeHtml(v.deviceId)}</span>`:''}${metadataBadges(v)}${state.labels[v.id]==='fall'?'<span class="badge fall">跌倒</span>':state.labels[v.id]==='no_fall'?'<span class="badge safe">不跌倒</span>':state.labels[v.id]==='caregiver_fall'?'<span class="badge caregiver">护工 Fall</span>':'<span class="badge">待判断</span>'}${changed?`<span class="badge warn">原：${labelName(v.originLabel)}</span>`:''}${v.duplicateName?'<span class="badge warn">文件名重复</span>':''}</div></div>`}
-  $('videoList').innerHTML=html||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
-  document.querySelectorAll('.item').forEach(el=>el.onclick=()=>selectVideo(el.dataset.id));
-  requestAnimationFrame(()=>document.querySelector('.item.active')?.scrollIntoView({block:'nearest'}));
-  const currentLabels=state.videos.map(v=>state.labels[v.id]),fall=currentLabels.filter(v=>v==='fall').length,safe=currentLabels.filter(v=>v==='no_fall').length,caregiver=currentLabels.filter(v=>v==='caregiver_fall').length;
-  $('summary').textContent=`共 ${state.videos.length} 个；已判断 ${fall+safe+caregiver}；跌倒 ${fall}；不跌倒 ${safe}；护工 Fall ${caregiver}；待判断 ${state.videos.length-fall-safe-caregiver}`;
-  updateDeviceUi();
+  for(const v of videos){const device=v.deviceId||'未识别设备';if(grouped&&device!==lastDevice){html+=`<div class="device-group">${escapeHtml(device)} · ${deviceCounts.get(device)} 个</div>`;lastDevice=device}html+=itemHtml(v)}
+  const list=$('videoList');list.innerHTML=html||'<div class="meta" style="padding:15px">没有符合条件的视频</div>';
+  itemElements.clear();for(const node of list.children)if(node.dataset.id)itemElements.set(node.dataset.id,node);
+  activeItem=itemElements.get(state.current?.id)||null;
+  requestAnimationFrame(scrollActiveIntoView);
+  updateSummary();updateDeviceUi();
+}
+// Selecting a video only moves the highlight: rebuilding the whole list on every
+// keypress is what made browsing feel stuck with thousands of videos.
+function updateActive(){
+  activeItem?.classList.remove('active');
+  activeItem=itemElements.get(state.current?.id)||null;
+  if(!activeItem&&state.current){renderList();return}
+  activeItem?.classList.add('active');
+  $('currentDevice').disabled=!state.current?.deviceId;
+  scrollActiveIntoView();
+}
+function renderItem(video){
+  const node=itemElements.get(video.id);
+  if(node)node.innerHTML=itemInner(video);
+  updateSummary();
+}
+// A labelled video may leave the active filter (for example 仅看待判断): hide its
+// row instead of rebuilding the list, so J/K/L stay instant.
+function applyListItemLabel(video){
+  const node=itemElements.get(video.id);
+  if(node){const kept=matchesFilters(video);node.classList.toggle('filtered',!kept);if(kept)node.innerHTML=itemInner(video)}
+  updateSummary();
 }
 function updateDecision(){const label=state.current?state.labels[state.current.id]:null;$('markFall').classList.toggle('active',label==='fall');$('markSafe').classList.toggle('active',label==='no_fall');$('markCaregiver').classList.toggle('active',label==='caregiver_fall')}
 function setPreviewOverlay(message='',kind='loading'){$('previewOverlay').textContent=message;$('previewOverlay').classList.toggle('hidden',!message);$('previewOverlay').classList.toggle('error',kind==='error');$('previewOverlay').classList.toggle('startable',kind==='blocked')}
@@ -375,7 +423,22 @@ async function requestCompatiblePreview(id,options={}){
 }
 const previewMemory=new Map();
 let preloadController=null;
+let warmedId=null;
 function discardPreview(id){const cached=previewMemory.get(id);if(cached)URL.revokeObjectURL(cached);previewMemory.delete(id)}
+// A cold proxy needs a full FFmpeg run, so ask the server to start on the next clips
+// right away. Fire-and-forget: browsing fast must never cancel an in-flight warm-up
+// (the server dedupes the claims), and this must not abort earlier requests.
+function warmUpcoming(id,depth=2){
+  if(warmedId===id)return;
+  warmedId=id;
+  for(const target of upcomingIds(depth)){
+    if(previewMemory.has(target))continue;
+    api('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:target})}).catch(()=>{});
+  }
+}
+// Runs once the current clip can actually play: the 16 MB blob download then no
+// longer competes with the first frames of the clip being watched.
+function startPrefetch(id){warmUpcoming(id);prefetchNextPreview(id)}
 async function prefetchNextPreview(id){
   if(state.current?.id!==id)return;
   const next=nextIdBeforeLabel();if(!next||previewMemory.has(next))return;
@@ -404,29 +467,35 @@ async function loadCompatiblePreview(id){
     if(result.status!=='ready')throw new Error(result.message||'兼容预览生成超时');
     player.dataset.videoId=id;playback.load(result.url);setPreviewOverlay('正在载入视频，随后从头播放…');
     $('saveStatus').textContent=`${currentLabelStatus(id)} · 已使用兼容预览（归档仍为原视频）`;$('saveStatus').className='save done';
-    prefetchNextPreview(id);
+    // Queue the following clips now: a cold proxy is a full FFmpeg run, and this
+    // request can no longer be cancelled by the next switch.
+    warmUpcoming(id);
   }catch(error){
     if(token!==state.previewToken||state.current?.id!==id)return;
     setPreviewOverlay(`兼容预览失败：${error.message}`,'error');
     $('saveStatus').textContent=`兼容预览失败：${error.message}`;$('saveStatus').className='save error';
   }finally{if(token===state.previewToken)$('makeProxy').disabled=false}
 }
-function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);$('currentPath').textContent=details.join(' · ');$('currentPath').title=details.join('\n');$('currentMetadata').innerHTML=metadataBadges(video)||'<span>未关联原始标签，可在 CSV 设置中选择</span>';$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';renderList();updateDecision();loadCompatiblePreview(id)}
-function nextIdBeforeLabel(){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id);const following=ordered.find((v,index)=>index>currentIndex&&matchesFilters(v));return following?.id||ordered.find(v=>v.id!==state.current?.id&&matchesFilters(v))?.id}
+function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);$('currentPath').textContent=details.join(' · ');$('currentPath').title=details.join('\n');$('currentMetadata').innerHTML=metadataBadges(video)||'<span>未关联原始标签，可在 CSV 设置中选择</span>';$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';updateActive();updateDecision();loadCompatiblePreview(id)}
+function upcomingIds(count){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id),ids=[];for(const [index,v] of ordered.entries())if(index>currentIndex&&matchesFilters(v)){ids.push(v.id);if(ids.length>=count)return ids}for(const v of ordered)if(v.id!==state.current?.id&&matchesFilters(v)){ids.push(v.id);if(ids.length>=count)break}return ids}
+function nextIdBeforeLabel(){return upcomingIds(1)[0]}
 function saveLabel(label,goNext=true){
-  if(!state.current||state.deciding)return state.saving;state.deciding=true;const id=state.current.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;renderList();updateDecision();
-  state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})})).then(()=>{$('saveStatus').textContent=`已保存：${labelName(label)}`;$('saveStatus').className='save done';if(nextId)selectVideo(nextId)}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];renderList();updateDecision();$('saveStatus').textContent=`保存失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'}).finally(()=>{state.deciding=false;for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=false});
+  if(!state.current||state.deciding)return state.saving;state.deciding=true;const video=state.current,id=video.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;applyListItemLabel(video);updateDecision();
+  state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})})).then(()=>{$('saveStatus').textContent=`已保存：${labelName(label)}`;$('saveStatus').className='save done';if(nextId)selectVideo(nextId)}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision();$('saveStatus').textContent=`保存失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'}).finally(()=>{state.deciding=false;for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=false});
   return state.saving;
 }
-function clearLabel(){if(!state.current)return;const id=state.current.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=state.current.originLabel;if(origin)state.labels[id]=origin;else delete state.labels[id];renderList();updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];renderList();updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
+function clearLabel(){if(!state.current)return;const video=state.current,id=video.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=video.originLabel;if(origin)state.labels[id]=origin;else delete state.labels[id];applyListItemLabel(video);updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
 function moveVideo(delta){const list=visibleVideos();if(!list.length)return;const index=list.findIndex(v=>v.id===state.current?.id),target=Math.min(list.length-1,Math.max(0,index+delta));selectVideo(list[target].id)}
 function seek(delta){if(!state.current)return;const duration=Number.isFinite(player.duration)?player.duration:state.current.duration;if(!duration)return;playback.seekBy(delta,duration)}
 function toggleLoop(){playback.set('loop',!playback.settings.loop)}
 function savePreferences(){try{localStorage.setItem(PREFERENCES_KEY,JSON.stringify(state.preferences))}catch{}}
-function renderPlayback(settings){
+function renderPlayback(settings,status={}){
   $('speed').value=String(settings.rate);$('autoPlay').checked=settings.autoplay;$('mutePlayback').checked=settings.muted;
   $('loopVideo').classList.toggle('active',settings.loop);
-  $('playbackHint').textContent=settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'从头连续循环':'从头连续播放'}，确认后再按 ${displayKey(state.preferences.shortcuts.fall)}/${displayKey(state.preferences.shortcuts.no_fall)}/${displayKey(state.preferences.shortcuts.caregiver_fall)} 分类`;
+  const shortcuts=state.preferences.shortcuts;
+  // Loop and play/pause are independent: the loop only decides what happens at the
+  // end of this clip, while only a deliberate stop holds for the following clips.
+  $('playbackHint').textContent=status.userStopped?`已暂停：切换视频后保持暂停，按 ${displayKey(shortcuts.play_pause)} 恢复`:settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'循环播放当前视频':'播到结尾后停住'}；切换视频照常播放，按 ${displayKey(shortcuts.play_pause)} 可暂停`;
   renderPreferences();
 }
 const playback=new ReviewPlayback(player,{onChange:renderPlayback,onBlocked:error=>setPreviewOverlay(error.name==='NotAllowedError'?'浏览器限制自动播放，点这里或按播放键开始':'暂时无法播放，请点击播放重试','blocked')});
@@ -442,7 +511,7 @@ function applyDeviceQuery(rawQuery=$('deviceSearch').value){
   const knownMatches=state.videos.filter(v=>v.deviceId?.toLowerCase()===query.toLowerCase());
   const matches=knownMatches.length?knownMatches:literalMatches;
   if(!matches.length){$('deviceStatus').textContent=`没有找到文件名包含“${query}”的视频，请检查是否复制完整`;$('deviceStatus').classList.add('error');return}
-  learnDeviceId(query);applyDeviceIds();state.deviceQuery=query;state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===query.toLowerCase());state.sortMode='device';$('search').value='';setAllLabelFilters();$('deviceSearch').value=query;
+  learnDeviceId(query);applyDeviceIds();state.deviceQuery=query;state.deviceExact=state.videos.some(v=>v.deviceId?.toLowerCase()===query.toLowerCase());state.sortMode='device';$('search').value='';state.searchQuery='';setAllLabelFilters();$('deviceSearch').value=query;
   const exactMatches=state.videos.filter(v=>deviceMatches(v));const target=exactMatches.find(v=>v.id===state.current?.id)||exactMatches.find(v=>!state.labels[v.id])||exactMatches[0];if(target)selectVideo(target.id);else renderList()
 }
 function clearDeviceQuery(){state.deviceQuery='';state.deviceExact=false;$('deviceSearch').value='';renderList()}
@@ -491,7 +560,12 @@ async function pollProxyAll(){try{const result=await api('/api/proxy-all-status'
 async function init(){renderPreferences();renderLayout();const data=await api('/api/videos');adoptVideoResponse(data);loadDeviceSettings();applyDeviceIds();renderPaths();const saved=await api('/api/state');state.labels=saved.labels||state.labels;if(state.videos.length&&state.videos.every(video=>state.labels[video.id]))setAllLabelFilters();renderList();const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id);pollExport();pollProxyAll()}
 $('toggleSideTools').onclick=()=>{state.layout.toolsCollapsed=!state.layout.toolsCollapsed;saveLayout();renderLayout()};
 $('toggleSideActions').onclick=()=>{state.layout.actionsCollapsed=!state.layout.actionsCollapsed;saveLayout();renderLayout()};
-$('search').oninput=renderList;
+let searchTimer=null;
+// The predicate reads state.searchQuery, so filtering is instant; only the list
+// rebuild itself waits for a short pause in typing.
+$('search').oninput=()=>{state.searchQuery=$('search').value.trim().toLowerCase();clearTimeout(searchTimer);searchTimer=setTimeout(renderList,120)};
+// One delegated handler instead of re-binding every row on every rebuild.
+$('videoList').onclick=event=>{const item=event.target.closest('.item');if(item)selectVideo(item.dataset.id)};
 $('deviceSearch').oninput=updateDeviceUi;$('deviceSearch').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();applyDeviceQuery()}};$('searchDevice').onclick=()=>applyDeviceQuery();$('clearDevice').onclick=clearDeviceQuery;
 $('currentDevice').onclick=()=>{if(state.current?.deviceId){$('deviceSearch').value=state.current.deviceId;applyDeviceQuery(state.current.deviceId)}};$('previousDevice').onclick=()=>moveDevice(-1);$('nextDevice').onclick=()=>moveDevice(1);
 $('deviceSort').onclick=()=>{state.sortMode=state.sortMode==='device'?'filename':'device';renderList()};$('deviceRule').onclick=showDeviceRule;$('saveDeviceRule').onclick=saveRuleFromDialog;
@@ -514,10 +588,10 @@ $('resetPreferences').onclick=()=>{state.preferences=JSON.parse(JSON.stringify(D
 $('settingsButton').onclick=()=>{$('settingsDialog').showModal();setTimeout(()=>$('playShortcut').focus(),0)};
 document.querySelectorAll('.shortcut-input').forEach(input=>input.onkeydown=event=>{event.preventDefault();event.stopPropagation();if(event.ctrlKey||event.metaKey||event.altKey){alert('请直接按一个键，不要同时按 Ctrl、Command 或 Alt。');return}changeShortcut(input.dataset.action,event.key)});
 $('previous').onclick=()=>moveVideo(-1);$('next').onclick=()=>moveVideo(1);
-player.onloadedmetadata=()=>{if(state.current&&Number.isFinite(player.duration)){state.current.duration=player.duration;$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration)}`;renderList()}};
+player.onloadedmetadata=()=>{if(state.current&&Number.isFinite(player.duration)){state.current.duration=player.duration;$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration)}`;renderItem(state.current)}};
 player.ontimeupdate=()=>$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
-player.oncanplay=()=>{if(player.dataset.videoId===state.current?.id&&!$('previewOverlay').classList.contains('startable'))setPreviewOverlay('')};
-player.onplaying=()=>{if(player.dataset.videoId===state.current?.id)setPreviewOverlay('')};
+player.oncanplay=()=>{if(player.dataset.videoId===state.current?.id){startPrefetch(state.current.id);if(!$('previewOverlay').classList.contains('startable'))setPreviewOverlay('')}};
+player.onplaying=()=>{if(player.dataset.videoId===state.current?.id){startPrefetch(state.current.id);setPreviewOverlay('')}};
 player.onerror=()=>{if(state.current&&player.dataset.videoId===state.current.id)setPreviewOverlay('兼容预览载入失败，请点击“重新加载兼容预览”','error')};
 $('makeProxy').onclick=()=>{if(state.current){discardPreview(state.current.id);loadCompatiblePreview(state.current.id)}};
 $('makeAllProxies').onclick=async()=>{try{await api('/api/proxy-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollProxyAll()}catch(error){$('proxyAllStatus').textContent=error.message;$('proxyAllStatus').className='save error'}};

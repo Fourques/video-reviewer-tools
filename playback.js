@@ -23,6 +23,8 @@
       } catch {}
       this.generation = 0;
       this.wantPlay = false;
+      // A deliberate stop stays in force for the following clips until the user plays again.
+      this.userStopped = false;
       this.resetting = true;
       this.pending = false;
       this.seekTarget = null;
@@ -34,7 +36,11 @@
       });
       player.addEventListener('play', () => { this.wantPlay = true; });
       player.addEventListener('pause', () => {
-        if (!this.resetting && player.readyState >= 2 && !player.ended) this.wantPlay = false;
+        // Only a deliberate stop counts. Switching clips, seeking and a clip that
+        // simply reached its end fire pause as well, and none of them mean "stop".
+        if (this.resetting || player.readyState < 2) return;
+        if (player.seeking || this.seekTarget !== null || this.atEnd()) return;
+        this.wantPlay = false; this.holdStopped();
       });
       player.addEventListener('volumechange', () => {
         if (!this.resetting && this.settings.muted !== player.muted) {
@@ -42,11 +48,31 @@
         }
       });
       this.apply();
-      this.onChange(this.settings);
+      this.onChange(this.settings, this.status());
+    }
+    status() {
+      return {userStopped: this.userStopped};
+    }
+    // A clip that played to its end is paused, and a keyboard fast-forward lands
+    // there too: neither is the user asking for the flow to stop.
+    atEnd() {
+      if (this.player.ended) return true;
+      const duration = this.player.duration;
+      return Number.isFinite(duration) && duration > 0 && this.player.currentTime >= duration - 0.25;
+    }
+    // Only report actual transitions: the player fires pause for reasons that are
+    // not a user stop (switching clips, seeking), and those must stay silent.
+    holdStopped() {
+      if (this.userStopped) return;
+      this.userStopped = true; this.onChange(this.settings, this.status());
+    }
+    resumeAutoplay() {
+      if (!this.userStopped) return;
+      this.userStopped = false; this.onChange(this.settings, this.status());
     }
     save() {
       try { this.storage?.setItem(this.key, JSON.stringify(this.settings)); } catch {}
-      this.onChange(this.settings);
+      this.onChange(this.settings, this.status());
     }
     apply() {
       // load() can reset playbackRate: set the default AND restore after metadata.
@@ -59,10 +85,11 @@
       if (key === 'rate' && !RATES.includes(Number(value))) return;
       if (!(key in DEFAULTS)) return;
       this.settings[key] = key === 'rate' ? Number(value) : Boolean(value);
+      if (key === 'autoplay' && this.settings.autoplay) this.resumeAutoplay();
       if (key === 'autoplay' && this.player.paused) this.wantPlay = Boolean(value);
       this.apply(); this.save();
     }
-    reset() { this.settings = {...DEFAULTS}; this.apply(); this.save(); }
+    reset() { this.settings = {...DEFAULTS}; this.userStopped = false; this.apply(); this.save(); }
     clear() {
       this.seekTarget = null;
       this.generation++; this.wantPlay = false; this.pending = false; this.resetting = true;
@@ -71,10 +98,11 @@
     load(source) {
       this.seekTarget = null;
       this.generation++; this.resetting = true; this.pending = false;
-      this.wantPlay = this.settings.autoplay;
+      this.wantPlay = this.settings.autoplay && !this.userStopped;
       this.apply(); this.player.src = source; this.player.load(); this.apply();
     }
     async play() {
+      this.resumeAutoplay();
       this.wantPlay = true; this.apply(); this.pending = true;
       const generation = this.generation;
       try { await this.player.play(); }
@@ -84,7 +112,7 @@
         }
       } finally { if (generation === this.generation) this.pending = false; }
     }
-    pause() { this.wantPlay = false; this.player.pause(); }
+    pause() { this.wantPlay = false; this.holdStopped(); this.player.pause(); }
     seekBy(delta, duration) {
       this.seekTarget = Math.min(duration, Math.max(0, (this.seekTarget ?? this.player.currentTime) + delta));
       this.flushSeek();
@@ -93,7 +121,11 @@
       // Coalesce repeated A/D presses: overlapping seeks can stall Chromium.
       if (this.player.seeking || this.seekTarget === null) return;
       const target = this.seekTarget; this.seekTarget = null;
+      const finished = this.atEnd();
       if (Math.abs(this.player.currentTime - target) > 0.001) this.player.currentTime = target;
+      // Fast-forwarding a clip that already ran to its end (loop off) must keep
+      // playing: the flow stays "wanted" until the user stops it.
+      if (finished && this.wantPlay && this.player.paused && !this.pending) this.play();
     }
     toggle() {
       if (!this.player.paused || (this.wantPlay && this.player.readyState < 3)) this.pause();

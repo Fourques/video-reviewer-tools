@@ -35,12 +35,62 @@ test('preferences survive a new controller and invalid rates are ignored',()=>{
   assert.deepEqual(next.settings,{rate:1.25,loop:false,autoplay:false,muted:false});
   next.reset();assert.deepEqual(next.settings,{rate:1.5,loop:true,autoplay:true,muted:true});
 });
-test('manual pause does not restart on canplay; next clip obeys autoplay preference',async()=>{
+test('a deliberate pause keeps following clips stopped until play resumes',async()=>{
   const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
   controller.toggle();player.ready();assert.equal(player.paused,true);
+  controller.load('next');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.paused,true);assert.equal(controller.wantPlay,false);
+  controller.toggle();await Promise.resolve();assert.equal(player.paused,false);
+  controller.load('third');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.paused,false);
+  controller.set('autoplay',false);controller.load('fourth');player.metadata();player.ready();assert.equal(player.paused,true);
+});
+test('pausing from the player controls also stops following clips',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  player.pause();
+  controller.load('next');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.paused,true);
+});
+test('the loop setting is independent of play and pause',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  controller.set('loop',false);
+  assert.equal(player.paused,false);assert.equal(player.loop,false);
+  assert.equal(controller.userStopped,false);
+  controller.load('next');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.paused,false);assert.equal(controller.status().userStopped,false);
+  controller.set('loop',true);controller.load('third');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.loop,true);assert.equal(player.paused,false);
+});
+test('a keyboard fast-forward that lands on the end is not a deliberate stop',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  player.duration=4;player.currentTime=0;controller.seekBy(100,4);
+  assert.equal(player.currentTime,4);
+  player.seeking=false;player.pause();
+  assert.equal(controller.userStopped,false);
+  controller.load('next');player.metadata();player.ready();await Promise.resolve();
+  assert.equal(player.paused,false);
+});
+test('seeking a clip that already ran to its end keeps playing',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  player.duration=4;player.currentTime=4;player.ended=true;player.pause();
+  assert.equal(controller.userStopped,false);assert.equal(player.paused,true);
+  const plays=player.plays;
+  controller.seekBy(-2,4);
+  assert.equal(player.currentTime,2);assert.equal(player.paused,false);assert.equal(player.plays,plays+1);
+});
+test('the interface is told once when playback stops and when it resumes',()=>{
+  const player=new Player(),seen=[];
+  const controller=new ReviewPlayback(player,{storage:{getItem:()=>null,setItem:()=>{}},onChange:(_,status)=>seen.push(status.userStopped)});
+  assert.equal(seen.at(-1),false);
+  controller.pause();assert.equal(seen.at(-1),true);
+  controller.pause();assert.equal(seen.filter(value=>value).length,1);
+  controller.play();assert.equal(seen.at(-1),false);
+  controller.load('next');assert.equal(seen.at(-1),false);
+});
+test('switching clips without stopping still follows the autoplay preference',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
   controller.load('next');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,false);
   controller.set('autoplay',false);controller.load('third');player.metadata();player.ready();assert.equal(player.paused,true);
-  controller.toggle();await Promise.resolve();assert.equal(player.paused,false);
 });
 test('S can cancel autoplay while a clip is buffering',()=>{
   const {controller,player}=setup();controller.load('first');controller.toggle();player.metadata();player.ready();

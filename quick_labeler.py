@@ -532,7 +532,14 @@ class LabelApp:
         if path.exists() and path.stat().st_size > 0:
             return {"status": "ready", "url": f"/proxy/{quote(video_id)}"}
         with self.lock:
-            return dict(self.proxy_jobs.get(video_id, {"status": "idle"}))
+            job = dict(self.proxy_jobs.get(video_id, {"status": "idle"}))
+            # The cache directory can be cleared from under us (macOS purges
+            # ~/Library/Caches under disk pressure). Reporting that stale "ready"
+            # would make the player load a missing file and fail for good.
+            if job.get("status") == "ready":
+                job = {"status": "idle"}
+                self.proxy_jobs[video_id] = job
+            return job
 
     def _claim_proxy(self, video_id: str) -> str:
         if self.closing.is_set():
@@ -561,10 +568,14 @@ class LabelApp:
 
             def command(include_audio: bool) -> list[str]:
                 audio = ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k"] if include_audio else ["-an"]
+                # Bicubic used to be lanczos. Measured on a 1080p/60s clip the scaler,
+                # not libx264, was the bottleneck: lanczos 3.26s, bicubic 2.19s,
+                # bilinear 1.80s (and no scaling at all is 0.41s), for a preview that
+                # only has to be watchable. libx264 -preset/-crf are unchanged.
                 return [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                     "-fflags", "+genpts", "-i", str(video.path), "-map", "0:v:0", *audio,
-                    "-vf", "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p,pad='ceil(iw/2)*2':'ceil(ih/2)*2'",
+                    "-vf", "scale='min(1280,iw)':-2:flags=bicubic,format=yuv420p,pad='ceil(iw/2)*2':'ceil(ih/2)*2'",
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                     "-profile:v", "main", "-tag:v", "avc1", "-sn", "-dn",
                     "-max_muxing_queue_size", "2048", "-avoid_negative_ts", "make_zero",
