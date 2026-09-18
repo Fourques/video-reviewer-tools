@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {ReviewPlayback, migrateSeekPreference} = require('../playback.js');
+const {ReviewPlayback, migrateSeekPreference, applyEffectiveRate, stopEffectiveRate, maxPlaybackRate} = require('../playback.js');
 class Player extends EventTarget {
   constructor(){super();this.paused=true;this.readyState=0;this.ended=false;this.muted=false;this.plays=0;}
   emit(name){this.dispatchEvent(new Event(name));}
@@ -10,6 +10,25 @@ class Player extends EventTarget {
   play(){this.plays++;this.paused=false;this.emit('play');return Promise.resolve();}
   pause(){this.paused=true;this.emit('pause');}
   removeAttribute(name){delete this[name];}
+}
+// Browsers throw NotSupportedError past their own ceiling (16x in Chromium/Firefox).
+class CappedPlayer extends Player {
+  get playbackRate(){return this._rate ?? 1;}
+  set playbackRate(value){
+    if(value>16)throw Object.assign(new Error('rate'),{name:'NotSupportedError'});
+    this._rate=value;
+  }
+}
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+// A real element plays itself at its native rate; the correction is what has to make
+// up the difference, so the fake has to move too or the numbers mean nothing.
+function playsItself(player,rate){
+  let last=Date.now();
+  const timer=setInterval(()=>{
+    const now=Date.now();const elapsed=(now-last)/1000;last=now;
+    if(!player.paused&&!player.seeking)player.currentTime+=rate*elapsed;
+  },20);
+  return ()=>clearInterval(timer);
 }
 function setup(saved){
   let value=saved===undefined?null:JSON.stringify(saved);
@@ -30,10 +49,100 @@ test('default autoplay is muted 1.5x full-video loop; every load restores speed'
 test('preferences survive a new controller and invalid rates are ignored',()=>{
   const {controller,storage}=setup();
   for(const [key,value] of Object.entries({rate:1.25,loop:false,autoplay:false,muted:false}))controller.set(key,value);
-  controller.set('rate',16);
+  controller.set('rate',5);
   const next=new ReviewPlayback(new Player(),{storage});
   assert.deepEqual(next.settings,{rate:1.25,loop:false,autoplay:false,muted:false});
   next.reset();assert.deepEqual(next.settings,{rate:1.5,loop:true,autoplay:true,muted:true});
+});
+// The fake players below play at the browser ceiling; whatever the clip covers beyond
+// that is the correction's doing, which is what these tests are about.
+test('rates above the browser ceiling really cover that many seconds per second',async()=>{
+  const player=new CappedPlayer();
+  player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
+  const stop=playsItself(player,16);
+  try{
+    assert.equal(maxPlaybackRate(player),16);
+    assert.deepEqual(applyEffectiveRate(player,20),{native:16,extra:4});
+    assert.equal(player.playbackRate,16);assert.equal(player.defaultPlaybackRate,16);
+    // the clip must sit at 20 x wall-clock even though the ceiling only plays 16 x
+    player.currentTime=0;
+    const started=Date.now();
+    await sleep(900);
+    const wall=(Date.now()-started)/1000;
+    const covered=player.currentTime/wall;
+    assert.ok(Math.abs(covered-20)<=0.9,
+      `${wall.toFixed(2)}s of wall clock covered ${player.currentTime.toFixed(2)}s = ${covered.toFixed(2)}x`);
+    // a pause stops the correction with the clip
+    player.paused=true;
+    await sleep(300);
+    assert.ok(Math.abs(player.currentTime-20*wall)<=1.5,'a paused clip must not be pulled forward');
+  }finally{stop();stopEffectiveRate(player);}
+});
+test('a rate the browser can play needs no skipping',async()=>{
+  const player=new CappedPlayer();
+  player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
+  const stop=playsItself(player,8);
+  try{
+    assert.deepEqual(applyEffectiveRate(player,16),{native:16,extra:0});
+    assert.deepEqual(applyEffectiveRate(player,8),{native:8,extra:0});
+    player.currentTime=0;
+    const started=Date.now();
+    await sleep(600);
+    const covered=player.currentTime/((Date.now()-started)/1000);
+    assert.ok(Math.abs(covered-8)<=0.9,`a rate the browser can play must stay untouched, got ${covered.toFixed(2)}x`);
+  }finally{stop();stopEffectiveRate(player);}
+});
+test('re-applying the same speed keeps the correction in place',async()=>{
+  const player=new CappedPlayer();
+  player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
+  const stop=playsItself(player,16);
+  try{
+    // canplay fires again and again while a clip plays, and each one re-applies the
+    // speed: starting the correction over there drops every second already made up,
+    // which is how a browser-capped 20x quietly turns back into 16x.
+    player.currentTime=0;
+    const started=Date.now();
+    for(let i=0;i<12;i++){applyEffectiveRate(player,20);await sleep(80);}
+    const covered=player.currentTime/((Date.now()-started)/1000);
+    assert.ok(covered>=18.5,`re-applying 20x twelve times covered only ${covered.toFixed(2)}x`);
+    // picking a different speed swaps the correction instead of stacking it
+    applyEffectiveRate(player,12);
+    player.currentTime=0;
+    const switched=Date.now();
+    await sleep(500);
+    const left=player.currentTime/((Date.now()-switched)/1000);
+    assert.ok(left<=17,`12x must not keep the 20x pull in place, got ${left.toFixed(2)}x`);
+  }finally{stop();stopEffectiveRate(player);}
+});
+test('a seek at a browser-capped speed is not pulled back by the correction',async()=>{
+  const player=new CappedPlayer();
+  player.duration=600;player.currentTime=0;player.readyState=0;player.paused=true;
+  const stop=playsItself(player,16);
+  const controller=new ReviewPlayback(player,{storage:{getItem:()=>null,setItem:()=>{}}});
+  try{
+    controller.set('rate',20);controller.load('first');player.metadata();player.ready();await Promise.resolve();
+    player.paused=false;
+    await sleep(700);                       // the clip runs ahead of where it started
+    const before=player.currentTime;
+    controller.seekBy(3-before,600);        // the user fast-forwards backwards
+    assert.equal(player.currentTime,3);
+    await sleep(400);
+    // 20x means it keeps going from 3, not back to where the deadline expected it
+    assert.ok(player.currentTime<=3+20*0.4+1,`the seek was undone: ${before.toFixed(2)} -> 3 -> ${player.currentTime.toFixed(2)}`);
+  }finally{stop();stopEffectiveRate(player);}
+});
+test('a saved 20x preference loads on a capped browser without throwing',async()=>{
+  const player=new CappedPlayer();
+  const controller=new ReviewPlayback(player,{storage:{getItem:()=>JSON.stringify({rate:20}),setItem:()=>{}}});
+  try{
+    assert.equal(controller.settings.rate,20);assert.equal(player.playbackRate,16);
+    controller.load('first');player.metadata();player.ready();await Promise.resolve();
+    assert.equal(player.playbackRate,16);assert.equal(player.paused,false);
+    controller.clear();
+    const held=player.currentTime;
+    await sleep(300);
+    assert.equal(player.currentTime,held);
+  }finally{stopEffectiveRate(player);}
 });
 test('a deliberate pause keeps following clips stopped until play resumes',async()=>{
   const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();

@@ -1,7 +1,86 @@
 /* Playback preferences are independent of project labels and review progress. */
 (function (root) {
-  const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+  const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 8, 12, 16, 20];
   const DEFAULTS = {rate:1.5, autoplay:true, loop:true, muted:true};
+  // How often a speed above the browser ceiling pulls the clip forward. Every pull
+  // costs a seek and a seek costs playback time, so the tick has to be long enough to
+  // let one land: 120ms measured 20.0x where a 250ms tick only reached 19.7x, and it
+  // keeps each jump near a second of media instead of one and a half.
+  const CATCH_UP_TICK = 120;
+  // How much of a clip's end is left to play at the ceiling rate. A reviewer must never
+  // have the last moments of a clip skipped past, so the correction stands down there.
+  const TAIL = 0.25;
+  const catchUps = new WeakMap();
+  // Browsers refuse a playbackRate above their own ceiling (Chromium and Firefox
+  // throw NotSupportedError past 16x), so a faster speed is played at the ceiling
+  // and the missing media time is skipped, keeping the real speed honest.
+  function maxPlaybackRate(player) {
+    const restore = player.playbackRate;
+    let ceiling = 1;
+    for (const candidate of [2, 4, 8, 16, 20, 32, 64]) {
+      try { player.playbackRate = candidate; ceiling = candidate; } catch { break; }
+    }
+    try { player.playbackRate = restore; } catch {}
+    return ceiling;
+  }
+  function stopEffectiveRate(player) {
+    const running = catchUps.get(player);
+    if (!running) return;
+    clearInterval(running.timer);
+    catchUps.delete(player);
+  }
+  // Returns the native rate the browser accepted plus the media seconds per wall
+  // second that the skip handler has to make up.
+  function applyEffectiveRate(player, rate) {
+    const native = Math.min(rate, maxPlaybackRate(player));
+    player.defaultPlaybackRate = native;
+    player.playbackRate = native;
+    const extra = Math.max(0, rate - native);
+    const running = catchUps.get(player);
+    // Re-applying the same speed must leave the correction alone: canplay fires
+    // repeatedly during playback, and rebuilding the handler would drop whatever
+    // shortfall has built up since the last slice.
+    if (running && running.rate === rate) return {native, extra};
+    stopEffectiveRate(player);
+    if (extra <= 0.001) return {native, extra:0};
+    // The clip has to sit at rate x wall-clock and the ceiling only plays native x of
+    // it, so each tick pulls the clip up to where that clock says it should be.
+    // Measuring against the clock rather than counting fixed steps keeps the real speed
+    // when a seek stalls playback for a moment, which is what a seek per tick costs.
+    const state = {rate, wall: Date.now(), media: Number(player.currentTime) || 0};
+    state.timer = setInterval(() => {
+      const now = Number(player.currentTime) || 0;
+      const duration = player.duration;
+      const mark = Date.now();
+      // A pause stops the clock, not the flow; a seek that has not landed must not be
+      // stacked on, or the element never leaves seeking and the clip crawls. Both mean
+      // the clock starts again from wherever the clip really is.
+      if (player.paused || player.seeking) { state.wall = mark; state.media = now; return; }
+      const projected = state.media + rate * (mark - state.wall) / 1000;
+      if (!Number.isFinite(duration)) {
+        if (now < projected - 0.05) player.currentTime = projected;
+        return;
+      }
+      // A clip that loops wraps on the projection's own schedule, so the projection is
+      // read modulo the clip's length: it always names a place inside the pass the clip
+      // is in, and the seek that costs time on the way there is still paid back.
+      const expected = projected % duration;
+      // The last moments of a clip are never skipped past: the tail plays at the ceiling.
+      if (now > duration - TAIL) return;
+      if (now < expected - 0.05) player.currentTime = Math.min(duration, expected);
+    }, CATCH_UP_TICK);
+    catchUps.set(player, state);
+    return {native, extra};
+  }
+  // A seek moves the clip somewhere the correction never planned for: the deadline has
+  // to start again from there, or the next tick drags the clip back to where it thought
+  // it should be and the user's fast-forward looks like it did nothing.
+  function reanchorEffectiveRate(player) {
+    const running = catchUps.get(player);
+    if (!running) return;
+    running.wall = Date.now();
+    running.media = Number(player.currentTime) || 0;
+  }
   function migrateSeekPreference(saved) {
     const value = Number(saved.seekSeconds);
     if (!Number.isFinite(value) || value <= 0) return 1;
@@ -76,8 +155,7 @@
     }
     apply() {
       // load() can reset playbackRate: set the default AND restore after metadata.
-      this.player.defaultPlaybackRate = this.settings.rate;
-      this.player.playbackRate = this.settings.rate;
+      applyEffectiveRate(this.player, this.settings.rate);
       this.player.loop = this.settings.loop;
       this.player.muted = this.settings.muted;
     }
@@ -93,6 +171,7 @@
     clear() {
       this.seekTarget = null;
       this.generation++; this.wantPlay = false; this.pending = false; this.resetting = true;
+      stopEffectiveRate(this.player);
       this.player.pause(); this.player.removeAttribute('src'); this.player.load();
     }
     load(source) {
@@ -122,7 +201,10 @@
       if (this.player.seeking || this.seekTarget === null) return;
       const target = this.seekTarget; this.seekTarget = null;
       const finished = this.atEnd();
-      if (Math.abs(this.player.currentTime - target) > 0.001) this.player.currentTime = target;
+      if (Math.abs(this.player.currentTime - target) > 0.001) {
+        this.player.currentTime = target;
+        reanchorEffectiveRate(this.player);
+      }
       // Fast-forwarding a clip that already ran to its end (loop off) must keep
       // playing: the flow stays "wanted" until the user stops it.
       if (finished && this.wantPlay && this.player.paused && !this.pending) this.play();
@@ -134,5 +216,11 @@
   }
   root.ReviewPlayback = ReviewPlayback;
   root.migrateSeekPreference = migrateSeekPreference;
-  if (typeof module !== 'undefined' && module.exports) module.exports = {ReviewPlayback, migrateSeekPreference};
+  root.applyEffectiveRate = applyEffectiveRate;
+  root.stopEffectiveRate = stopEffectiveRate;
+  root.reanchorEffectiveRate = reanchorEffectiveRate;
+  root.maxPlaybackRate = maxPlaybackRate;
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {ReviewPlayback, migrateSeekPreference, applyEffectiveRate, stopEffectiveRate, maxPlaybackRate, reanchorEffectiveRate};
+  }
 })(globalThis);

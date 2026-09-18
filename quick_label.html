@@ -122,7 +122,7 @@
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.3</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.4</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
@@ -179,7 +179,7 @@
         <span id="playerTime" class="time">00:00.000 / 00:00.000</span>
         <button id="playPause">播放/暂停 (S)</button>
         <button id="loopVideo">循环当前视频 (W)</button>
-        <label>速度 <select id="speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5" selected>1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label>
+        <label>速度 <select id="speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5" selected>1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="8">8×</option><option value="12">12×</option><option value="16">16×</option><option value="20">20×</option></select></label>
         <button id="makeProxy">重新加载兼容预览</button>
         <button id="makeAllProxies">后台兼容全部视频</button>
         <button id="clearLabel">撤销当前标签</button>
@@ -495,7 +495,7 @@ function renderPlayback(settings,status={}){
   const shortcuts=state.preferences.shortcuts;
   // Loop and play/pause are independent: the loop only decides what happens at the
   // end of this clip, while only a deliberate stop holds for the following clips.
-  $('playbackHint').textContent=status.userStopped?`已暂停：切换视频后保持暂停，按 ${displayKey(shortcuts.play_pause)} 恢复`:settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'循环播放当前视频':'播到结尾后停住'}；切换视频照常播放，按 ${displayKey(shortcuts.play_pause)} 可暂停`;
+  $('playbackHint').textContent=status.userStopped?`已暂停：切换视频后保持暂停，按 ${displayKey(shortcuts.play_pause)} 恢复`:settings.rate>16?`${settings.rate}× 浏览中：浏览器最高 16×，其余用跳段补足`:settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'循环播放当前视频':'播到结尾后停住'}；切换视频照常播放，按 ${displayKey(shortcuts.play_pause)} 可暂停`;
   renderPreferences();
 }
 const playback=new ReviewPlayback(player,{onChange:renderPlayback,onBlocked:error=>setPreviewOverlay(error.name==='NotAllowedError'?'浏览器限制自动播放，点这里或按播放键开始':'暂时无法播放，请点击播放重试','blocked')});
