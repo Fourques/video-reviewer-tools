@@ -152,7 +152,7 @@ test('a deliberate pause keeps following clips stopped until play resumes',async
   controller.toggle();await Promise.resolve();assert.equal(player.paused,false);
   controller.load('third');player.metadata();player.ready();await Promise.resolve();
   assert.equal(player.paused,false);
-  controller.set('autoplay',false);controller.load('fourth');player.metadata();player.ready();assert.equal(player.paused,true);
+  controller.set('autoplay',false);controller.load('fourth');player.metadata();player.ready();assert.equal(player.paused,false);
 });
 test('pausing from the player controls also stops following clips',async()=>{
   const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
@@ -172,6 +172,7 @@ test('the loop setting is independent of play and pause',async()=>{
 });
 test('a keyboard fast-forward that lands on the end is not a deliberate stop',async()=>{
   const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  controller.set('loop',false);
   player.duration=4;player.currentTime=0;controller.seekBy(100,4);
   assert.equal(player.currentTime,4);
   player.seeking=false;player.pause();
@@ -196,10 +197,18 @@ test('the interface is told once when playback stops and when it resumes',()=>{
   controller.play();assert.equal(seen.at(-1),false);
   controller.load('next');assert.equal(seen.at(-1),false);
 });
-test('switching clips without stopping still follows the autoplay preference',async()=>{
+test('switching follows the previous playback state, even with autoplay off',async()=>{
   const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
   controller.load('next');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,false);
-  controller.set('autoplay',false);controller.load('third');player.metadata();player.ready();assert.equal(player.paused,true);
+  controller.set('autoplay',false);controller.load('third');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,false);
+  controller.pause();controller.load('fourth');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,true);
+});
+test('a manual start with autoplay disabled survives direct and proxy switches',async()=>{
+  const {controller,player}=setup({autoplay:false});
+  controller.load('first');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,true);
+  await controller.play();assert.equal(player.paused,false);
+  controller.load('next');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,false);
+  controller.clear();controller.load('proxy');player.metadata();player.ready();await Promise.resolve();assert.equal(player.paused,false);
 });
 test('S can cancel autoplay while a clip is buffering',()=>{
   const {controller,player}=setup();controller.load('first');controller.toggle();player.metadata();player.ready();
@@ -229,7 +238,18 @@ test('repeated seeks are coalesced and never interrupt a pending seek',()=>{
   controller.seekBy(1,8);assert.equal(player.currentTime,2);
   controller.seekBy(1,8);controller.seekBy(-1,8);assert.equal(player.currentTime,2);
   player.seeking=false;player.emit('seeked');assert.equal(player.currentTime,3);
-  controller.seekBy(100,8);assert.equal(player.currentTime,8);
-  controller.seekBy(-100,8);assert.equal(player.currentTime,0);
+  controller.seekBy(100,8);assert.equal(player.currentTime,7);
+  controller.seekBy(-100,8);assert.equal(player.currentTime,3);
   controller.load('next');assert.equal(controller.seekTarget,null);
+});
+test('holding A/D wraps across the clip boundary while loop is enabled',async()=>{
+  const {controller,player}=setup();controller.load('first');player.metadata();player.ready();await Promise.resolve();
+  player.duration=8;player.currentTime=7.5;
+  controller.seekBy(1,8);assert.equal(player.currentTime,.5);
+  controller.seekBy(-1,8);assert.equal(player.currentTime,7.5);
+  for(let i=0;i<24;i++)controller.seekBy(1,8);
+  assert.equal(player.currentTime,7.5);
+  assert.equal(player.paused,false);assert.equal(controller.userStopped,false);
+  controller.set('loop',false);controller.seekBy(100,8);
+  assert.equal(player.currentTime,8);
 });

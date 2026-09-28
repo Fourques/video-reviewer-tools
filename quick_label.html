@@ -122,7 +122,7 @@
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.4</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.5</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
@@ -186,7 +186,7 @@
         <button id="settingsButton">快捷键设置</button>
       </div>
       <div class="playback-options">
-        <label><input id="autoPlay" type="checkbox" checked>切换后自动播放</label>
+        <label><input id="autoPlay" type="checkbox" checked>默认自动播放（切换继承播放状态）</label>
         <label><input id="mutePlayback" type="checkbox" checked>静音</label>
         <span id="playbackHint">从头连续循环，确认后再按 J/K/L 分类</span>
       </div>
@@ -290,7 +290,7 @@ const DEFAULT_DEVICE_RULE={mode:'auto',delimiter:'_',fieldIndex:2,regex:''};
 const LAYOUT_KEY='videoReviewer.quickLabel.layout.v1';
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 function loadLayout(){try{return{toolsCollapsed:false,actionsCollapsed:true,...JSON.parse(localStorage.getItem(LAYOUT_KEY)||'{}')}}catch{return{toolsCollapsed:false,actionsCollapsed:true}}}
-const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),deciding:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',output:'',noFallOutput:'',caregiverOutput:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0,metadataConfig:{},metadataColumns:[],detectedCsvs:[],searchQuery:'',dataVersion:0};
+const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,caregiverOnly:false,saving:Promise.resolve(),pendingSaves:0,saveFailed:false,previewToken:0,preferences:loadPreferences(),layout:loadLayout(),source:'',output:'',noFallOutput:'',caregiverOutput:'',deviceQuery:'',deviceExact:false,sortMode:'filename',deviceRule:{...DEFAULT_DEVICE_RULE},learnedDeviceIds:[],autoDeviceField:null,autoDeviceTokens:new Map(),metadataCsv:'',metadataMatched:0,metadataConflicts:0,metadataConfig:{},metadataColumns:[],detectedCsvs:[],searchQuery:'',dataVersion:0};
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
@@ -378,7 +378,7 @@ function scrollActiveIntoView(){
 }
 function updateSummary(){
   const currentLabels=state.videos.map(v=>state.labels[v.id]),fall=currentLabels.filter(v=>v==='fall').length,safe=currentLabels.filter(v=>v==='no_fall').length,caregiver=currentLabels.filter(v=>v==='caregiver_fall').length;
-  $('summary').textContent=`共 ${state.videos.length} 个；已判断 ${fall+safe+caregiver}；跌倒 ${fall}；不跌倒 ${safe}；护工 Fall ${caregiver}；待判断 ${state.videos.length-fall-safe-caregiver}`;
+  $('summary').textContent=`共 ${state.videos.length} 个；已判断 ${fall+safe+caregiver}；跌倒 ${fall}；不跌倒 ${safe}；护工 Fall ${caregiver}；待判断 ${state.videos.length-fall-safe-caregiver}${state.pendingSaves?`；保存中 ${state.pendingSaves}`:''}${state.saveFailed?'；有保存失败':''}`;
 }
 function renderList(){
   const videos=visibleVideos();
@@ -422,12 +422,19 @@ async function requestCompatiblePreview(id,options={}){
   return result;
 }
 const previewMemory=new Map();
-let preloadController=null;
+const prefetchControllers=new Map();
+const MAX_PREVIEW_BYTES=16*1024*1024;
+let fallbackTimer=null;
 let warmedId=null;
 function discardPreview(id){const cached=previewMemory.get(id);if(cached)URL.revokeObjectURL(cached);previewMemory.delete(id)}
+function mediaUrl(id){return `/media/${encodeURIComponent(id)}`}
+function prunePreviews(id){
+  const keep=new Set([id,...upcomingIds(3)]);
+  for(const key of previewMemory.keys())if(!keep.has(key))discardPreview(key);
+  for(const [key,controller] of prefetchControllers)if(!keep.has(key))controller.abort();
+}
 // A cold proxy needs a full FFmpeg run, so ask the server to start on the next clips
-// right away. Fire-and-forget: browsing fast must never cancel an in-flight warm-up
-// (the server dedupes the claims), and this must not abort earlier requests.
+// only if the original codec could not play. Normal H.264 clips play directly.
 function warmUpcoming(id,depth=2){
   if(warmedId===id)return;
   warmedId=id;
@@ -436,55 +443,76 @@ function warmUpcoming(id,depth=2){
     api('/api/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:target})}).catch(()=>{});
   }
 }
-// Runs once the current clip can actually play: the 16 MB blob download then no
-// longer competes with the first frames of the clip being watched.
-function startPrefetch(id){warmUpcoming(id);prefetchNextPreview(id)}
-async function prefetchNextPreview(id){
-  if(state.current?.id!==id)return;
-  const next=nextIdBeforeLabel();if(!next||previewMemory.has(next))return;
-  preloadController?.abort();const controller=new AbortController();preloadController=controller;
+// Hold the next few small originals in browser memory, ready before a label key is
+// pressed. Large files still stream normally through the server's Range handler.
+async function cacheUpcoming(id){
+  if(previewMemory.has(id)||prefetchControllers.has(id))return;
+  const video=state.videos.find(v=>v.id===id);
+  if(!video||video.size>MAX_PREVIEW_BYTES)return;
+  const controller=new AbortController();prefetchControllers.set(id,controller);
   try{
-    let result=await requestCompatiblePreview(next,{signal:controller.signal}),attempts=0;
-    while(result.status==='running'&&attempts++<240){await wait(250);if(controller.signal.aborted||state.current?.id!==id)return;result=await api(`/api/proxy-status?id=${encodeURIComponent(next)}`,{signal:controller.signal})}
-    if(result.status!=='ready'||controller.signal.aborted||state.current?.id!==id)return;
-    const response=await fetch(result.url,{signal:controller.signal});
+    const response=await fetch(mediaUrl(id),{signal:controller.signal});
     const size=Number(response.headers.get('Content-Length'));
-    // Hold only the active and next short preview, up to 16 MB each.
-    if(!response.ok||!size||size>16*1024*1024){await response.body?.cancel();return}
-    const blob=await response.blob();if(controller.signal.aborted||state.current?.id!==id)return;
-    discardPreview(next);previewMemory.set(next,URL.createObjectURL(blob));
-  }catch{} // A failed prefetch falls back to normal loading on selection.
+    if(!response.ok||!size||size>MAX_PREVIEW_BYTES){await response.body?.cancel();return}
+    const blob=await response.blob();
+    if(controller.signal.aborted||!new Set([state.current?.id,...upcomingIds(3)]).has(id))return;
+    discardPreview(id);previewMemory.set(id,URL.createObjectURL(blob));
+  }catch{}finally{prefetchControllers.delete(id)}
 }
-async function loadCompatiblePreview(id){
-  const token=++state.previewToken;
-  preloadController?.abort();playback.clear();delete player.dataset.videoId;
-  for(const key of previewMemory.keys())if(key!==id)discardPreview(key);
+function startPrefetch(id){if(state.current?.id===id)for(const next of upcomingIds(3))cacheUpcoming(next)}
+async function loadProxyPreview(id,token){
+  if(token!==state.previewToken||state.current?.id!==id)return;
+  clearTimeout(fallbackTimer);fallbackTimer=null;
+  player.dataset.previewKind='proxy';delete player.dataset.videoId;delete player.dataset.reviewReady;playback.clear();
+  for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;
   setPreviewOverlay('正在生成浏览器兼容预览…');$('makeProxy').disabled=true;
+  warmUpcoming(id);
   try{
-    let result=previewMemory.has(id)?{status:'ready',url:previewMemory.get(id)}:await requestCompatiblePreview(id),attempts=0;
+    let result=await requestCompatiblePreview(id),attempts=0;
     while(result.status==='running'&&attempts++<240){await wait(250);if(token!==state.previewToken||state.current?.id!==id)return;result=await api(`/api/proxy-status?id=${encodeURIComponent(id)}`)}
     if(token!==state.previewToken||state.current?.id!==id)return;
     if(result.status!=='ready')throw new Error(result.message||'兼容预览生成超时');
-    player.dataset.videoId=id;playback.load(result.url);setPreviewOverlay('正在载入视频，随后从头播放…');
+    player.dataset.videoId=id;playback.load(result.url);setPreviewOverlay('正在载入兼容预览…');
     $('saveStatus').textContent=`${currentLabelStatus(id)} · 已使用兼容预览（归档仍为原视频）`;$('saveStatus').className='save done';
-    // Queue the following clips now: a cold proxy is a full FFmpeg run, and this
-    // request can no longer be cancelled by the next switch.
-    warmUpcoming(id);
   }catch(error){
     if(token!==state.previewToken||state.current?.id!==id)return;
     setPreviewOverlay(`兼容预览失败：${error.message}`,'error');
     $('saveStatus').textContent=`兼容预览失败：${error.message}`;$('saveStatus').className='save error';
   }finally{if(token===state.previewToken)$('makeProxy').disabled=false}
 }
+async function loadCompatiblePreview(id){
+  const token=++state.previewToken;
+  clearTimeout(fallbackTimer);fallbackTimer=null;
+  delete player.dataset.videoId;delete player.dataset.reviewReady;prunePreviews(id);
+  player.dataset.videoId=id;player.dataset.previewKind='original';
+  for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;
+  setPreviewOverlay('正在载入视频…');$('makeProxy').disabled=false;
+  playback.load(previewMemory.get(id)||mediaUrl(id));
+  $('saveStatus').textContent=`${currentLabelStatus(id)} · 原视频直接预览`;$('saveStatus').className='save';
+  fallbackTimer=setTimeout(()=>{
+    if(token===state.previewToken&&player.dataset.previewKind==='original'&&player.readyState<2)loadProxyPreview(id,token);
+  },2500);
+}
 function selectVideo(id){const video=state.videos.find(v=>v.id===id);if(!video)return;state.current=video;$('empty').classList.add('hidden');$('workspace').classList.remove('hidden');$('currentName').textContent=video.name;const details=[video.relative];if(video.deviceId)details.push(`设备 ID：${video.deviceId}`);$('currentPath').textContent=details.join(' · ');$('currentPath').title=details.join('\n');$('currentMetadata').innerHTML=metadataBadges(video)||'<span>未关联原始标签，可在 CSV 设置中选择</span>';$('saveStatus').textContent=currentLabelStatus(id);$('saveStatus').className='save';updateActive();updateDecision();loadCompatiblePreview(id)}
 function upcomingIds(count){const ordered=orderedVideos(),currentIndex=ordered.findIndex(v=>v.id===state.current?.id),ids=[];for(const [index,v] of ordered.entries())if(index>currentIndex&&matchesFilters(v)){ids.push(v.id);if(ids.length>=count)return ids}for(const v of ordered)if(v.id!==state.current?.id&&matchesFilters(v)){ids.push(v.id);if(ids.length>=count)break}return ids}
 function nextIdBeforeLabel(){return upcomingIds(1)[0]}
+const labelRevisions=new Map();
 function saveLabel(label,goNext=true){
-  if(!state.current||state.deciding)return state.saving;state.deciding=true;const video=state.current,id=video.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];state.labels[id]=label;$('saveStatus').textContent='保存中…';$('saveStatus').className='save';for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=true;applyListItemLabel(video);updateDecision();
-  state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})})).then(()=>{$('saveStatus').textContent=`已保存：${labelName(label)}`;$('saveStatus').className='save done';if(nextId)selectVideo(nextId)}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision();$('saveStatus').textContent=`保存失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'}).finally(()=>{state.deciding=false;for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=false});
+  if(!state.current||player.dataset.videoId!==state.current.id||player.dataset.reviewReady!=='1')return state.saving;
+  const video=state.current,id=video.id,nextId=goNext?nextIdBeforeLabel():null,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id];
+  const revision=(labelRevisions.get(id)||0)+1;labelRevisions.set(id,revision);
+  state.labels[id]=label;state.pendingSaves++;applyListItemLabel(video);updateDecision();
+  if(nextId)selectVideo(nextId);
+  else{$('saveStatus').textContent='保存中…';$('saveStatus').className='save'}
+  state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label})})).then(()=>{
+    if(state.current?.id===id){$('saveStatus').textContent=`已保存：${labelName(label)}`;$('saveStatus').className='save done'}
+  }).catch(error=>{
+    if(labelRevisions.get(id)===revision){if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision()}
+    state.saveFailed=true;alert(`“${video.name}”保存失败：${error.message}`);
+  }).finally(()=>{state.pendingSaves--;updateSummary()});
   return state.saving;
 }
-function clearLabel(){if(!state.current)return;const video=state.current,id=video.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=video.originLabel;if(origin)state.labels[id]=origin;else delete state.labels[id];applyListItemLabel(video);updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}).catch(error=>{if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision();$('saveStatus').textContent=`撤销失败，已恢复原标签：${error.message}`;$('saveStatus').className='save error'});return state.saving}
+function clearLabel(){if(!state.current)return;const video=state.current,id=video.id,hadPrevious=Object.hasOwn(state.labels,id),previous=state.labels[id],origin=video.originLabel;const revision=(labelRevisions.get(id)||0)+1;labelRevisions.set(id,revision);state.pendingSaves++;if(origin)state.labels[id]=origin;else delete state.labels[id];applyListItemLabel(video);updateDecision();state.saving=state.saving.then(()=>api('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,label:null})})).then(()=>{if(state.current?.id===id){$('saveStatus').textContent=origin?`已撤销修改，恢复原分类：${labelName(origin)}`:'已撤销标签';$('saveStatus').className='save done'}}).catch(error=>{if(labelRevisions.get(id)===revision){if(hadPrevious)state.labels[id]=previous;else delete state.labels[id];applyListItemLabel(video);updateDecision()}state.saveFailed=true;alert(`“${video.name}”撤销失败：${error.message}`)}).finally(()=>{state.pendingSaves--;updateSummary()});return state.saving}
 function moveVideo(delta){const list=visibleVideos();if(!list.length)return;const index=list.findIndex(v=>v.id===state.current?.id),target=Math.min(list.length-1,Math.max(0,index+delta));selectVideo(list[target].id)}
 function seek(delta){if(!state.current)return;const duration=Number.isFinite(player.duration)?player.duration:state.current.duration;if(!duration)return;playback.seekBy(delta,duration)}
 function toggleLoop(){playback.set('loop',!playback.settings.loop)}
@@ -495,12 +523,13 @@ function renderPlayback(settings,status={}){
   const shortcuts=state.preferences.shortcuts;
   // Loop and play/pause are independent: the loop only decides what happens at the
   // end of this clip, while only a deliberate stop holds for the following clips.
-  $('playbackHint').textContent=status.userStopped?`已暂停：切换视频后保持暂停，按 ${displayKey(shortcuts.play_pause)} 恢复`:settings.rate>16?`${settings.rate}× 浏览中：浏览器最高 16×，其余用跳段补足`:settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'循环播放当前视频':'播到结尾后停住'}；切换视频照常播放，按 ${displayKey(shortcuts.play_pause)} 可暂停`;
+  $('playbackHint').textContent=status.userStopped?`已暂停：切换视频后保持暂停，按 ${displayKey(shortcuts.play_pause)} 恢复`:!settings.autoplay?`默认不自动播放；手动开始后，切换视频会继续播放`:settings.rate>16?`${settings.rate}× 浏览中：浏览器最高 16×，其余用跳段补足`:settings.rate>2?'高速浏览中；动作细节建议用 0.75–1.5× 复看':`${settings.loop?'循环播放当前视频':'播到结尾后停住'}；切换视频照常播放，按 ${displayKey(shortcuts.play_pause)} 可暂停`;
   renderPreferences();
 }
 const playback=new ReviewPlayback(player,{onChange:renderPlayback,onBlocked:error=>setPreviewOverlay(error.name==='NotAllowedError'?'浏览器限制自动播放，点这里或按播放键开始':'暂时无法播放，请点击播放重试','blocked')});
 $('previewOverlay').onclick=()=>{if($('previewOverlay').classList.contains('startable'))playback.play()};
-addEventListener('pagehide',()=>{preloadController?.abort();for(const key of previewMemory.keys())discardPreview(key)});
+addEventListener('beforeunload',event=>{if(state.pendingSaves){event.preventDefault();event.returnValue=''}});
+addEventListener('pagehide',()=>{clearTimeout(fallbackTimer);for(const controller of prefetchControllers.values())controller.abort();for(const key of previewMemory.keys())discardPreview(key)});
 function renderPreferences(){const p=state.preferences;$('seekSeconds').value=p.seekSeconds;for(const [action,id] of Object.entries(SHORTCUT_FIELDS))$(id).value=displayKey(p.shortcuts[action]);for(const [action,id] of Object.entries(SHORTCUT_HINTS))$(id).textContent=displayKey(p.shortcuts[action]);$('seekHint').textContent=`±${p.seekSeconds} 秒`;$('markFall').textContent=`跌倒，并进入下一个（${displayKey(p.shortcuts.fall)}）`;$('markSafe').textContent=`不跌倒，并进入下一个（${displayKey(p.shortcuts.no_fall)}）`;$('markCaregiver').textContent=`护工 Fall，并进入下一个（${displayKey(p.shortcuts.caregiver_fall)}）`;$('playPause').textContent=`播放/暂停（${displayKey(p.shortcuts.play_pause)}）`;$('loopVideo').textContent=`${player.loop?'停止循环':'循环当前视频'}（${displayKey(p.shortcuts.loop)}）`;$('clearLabel').textContent=`撤销当前标签（${displayKey(p.shortcuts.clear_label)}）`;$('previous').textContent=`上一个（${displayKey(p.shortcuts.previous_video)}）`;$('next').textContent=`下一个（${displayKey(p.shortcuts.next_video)}）`}
 function changeShortcut(action,key){key=normalizeKey(key);const blocked=new Set(['','tab','escape','shift','control','alt','meta','capslock','unidentified','dead']);if(blocked.has(key)){alert('这个键用于系统或窗口操作，请换一个键。');renderPreferences();return}const used=Object.entries(state.preferences.shortcuts).find(([name,current])=>name!==action&&current===key);if(used){alert(`${displayKey(key)} 已用于“${ACTION_NAMES[used[0]]}”，请换一个键。`);renderPreferences();return}state.preferences.shortcuts[action]=key;savePreferences();renderPreferences()}
 function setAllLabelFilters(){state.pendingOnly=false;state.fallOnly=false;state.caregiverOnly=false;$('pendingOnly').textContent='仅看待判断';$('fallOnly').textContent='仅看跌倒';$('caregiverOnly').textContent='仅看护工 Fall'}
@@ -590,16 +619,16 @@ document.querySelectorAll('.shortcut-input').forEach(input=>input.onkeydown=even
 $('previous').onclick=()=>moveVideo(-1);$('next').onclick=()=>moveVideo(1);
 player.onloadedmetadata=()=>{if(state.current&&Number.isFinite(player.duration)){state.current.duration=player.duration;$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration)}`;renderItem(state.current)}};
 player.ontimeupdate=()=>$('playerTime').textContent=`${formatTime(player.currentTime)} / ${formatTime(player.duration||state.current?.duration)}`;
-player.oncanplay=()=>{if(player.dataset.videoId===state.current?.id){startPrefetch(state.current.id);if(!$('previewOverlay').classList.contains('startable'))setPreviewOverlay('')}};
+player.oncanplay=()=>{if(player.dataset.videoId===state.current?.id){player.dataset.reviewReady='1';clearTimeout(fallbackTimer);fallbackTimer=null;for(const button of [$('markFall'),$('markSafe'),$('markCaregiver')])button.disabled=false;startPrefetch(state.current.id);if(!$('previewOverlay').classList.contains('startable'))setPreviewOverlay('')}};
 player.onplaying=()=>{if(player.dataset.videoId===state.current?.id){startPrefetch(state.current.id);setPreviewOverlay('')}};
-player.onerror=()=>{if(state.current&&player.dataset.videoId===state.current.id)setPreviewOverlay('兼容预览载入失败，请点击“重新加载兼容预览”','error')};
-$('makeProxy').onclick=()=>{if(state.current){discardPreview(state.current.id);loadCompatiblePreview(state.current.id)}};
+player.onerror=()=>{if(!state.current||player.dataset.videoId!==state.current.id)return;if(player.dataset.previewKind==='original')loadProxyPreview(state.current.id,state.previewToken);else setPreviewOverlay('兼容预览载入失败，请点击“重新加载兼容预览”','error')};
+$('makeProxy').onclick=()=>{if(state.current)loadProxyPreview(state.current.id,++state.previewToken)};
 $('makeAllProxies').onclick=async()=>{try{await api('/api/proxy-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollProxyAll()}catch(error){$('proxyAllStatus').textContent=error.message;$('proxyAllStatus').className='save error'}};
-$('exportAll').onclick=async()=>{if(!confirm('确认整理全部分类修改？\n\n工具会联合检查未分类、跌倒、不跌倒和护工 Fall 四个目录，只把位置错误或新标记的视频移动到正确目录；原本位置正确的视频不会重复处理。'))return;try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
+$('exportAll').onclick=async()=>{if(!confirm('确认整理全部分类修改？\n\n工具会联合检查未分类、跌倒、不跌倒和护工 Fall 四个目录，只把位置错误或新标记的视频移动到正确目录；原本位置正确的视频不会重复处理。'))return;await state.saving;if(state.saveFailed){alert('有标签保存失败。请刷新后核对并重新提交，再整理。');return}try{await api('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});pollExport()}catch(error){$('exportStatus').textContent=error.message}};
 async function reloadAfterArchive(){const data=await api('/api/videos');adoptVideoResponse(data);const currentStillExists=state.current&&state.videos.some(v=>v.id===state.current.id);if(!currentStillExists){state.current=null;player.pause();player.removeAttribute('src');player.load();$('workspace').classList.add('hidden');$('empty').classList.remove('hidden');$('empty').textContent=state.videos.length?'正在打开整理后的视频…':'四个目录中都没有视频';const first=visibleVideos()[0]||state.videos[0];if(first)selectVideo(first.id)}renderList()}
 async function pollExport(){try{const result=await api('/api/export-status');$('exportStatus').textContent=result.message||'';$('exportStatus').className=`status ${result.status==='error'?'error':result.status==='done'?'done':''}`;$('exportAll').disabled=result.status==='running';if(result.status==='running')setTimeout(pollExport,1000);else if(result.status==='done'||result.status==='error')await reloadAfterArchive()}catch{setTimeout(pollExport,2000)}}
 $('rescan').onclick=async()=>{try{const data=await api('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});adoptVideoResponse(data);renderList()}catch(error){alert(error.message)}};
-$('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？已保存的标签不会丢失。'))return;try{await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<div id="empty">工具已安全退出，可以关闭此页面。</div>'}catch(error){alert(error.message)}};
+$('quitTool').onclick=async()=>{if(!confirm('确认退出视频审核工具？已保存的标签不会丢失。'))return;await state.saving;if(state.saveFailed){alert('有标签保存失败，请刷新后核对。');return}try{await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});document.body.innerHTML='<div id="empty">工具已安全退出，可以关闭此页面。</div>'}catch(error){alert(error.message)}};
 document.addEventListener('keydown',event=>{if(event.ctrlKey||event.metaKey||event.altKey||event.target.isContentEditable||document.querySelector('dialog[open]')||['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;const key=normalizeKey(event.key),action=Object.entries(state.preferences.shortcuts).find(([,shortcut])=>shortcut===key)?.[0];if(!action)return;if(event.repeat&&!['step_back','step_forward','jump_back','jump_forward'].includes(action))return;event.preventDefault();if(action==='fall'||action==='no_fall'||action==='caregiver_fall')saveLabel(action);else if(action==='play_pause')playback.toggle();else if(action==='loop')toggleLoop();else if(action==='step_back')seek(-1);else if(action==='step_forward')seek(1);else if(action==='jump_back')seek(-state.preferences.seekSeconds);else if(action==='jump_forward')seek(state.preferences.seekSeconds);else if(action==='previous_video')moveVideo(-1);else if(action==='next_video')moveVideo(1);else if(action==='clear_label')clearLabel()});
 savePreferences();
 init().catch(error=>{$('empty').textContent=`启动失败：${error.message}`});

@@ -104,6 +104,8 @@
       this.wantPlay = false;
       // A deliberate stop stays in force for the following clips until the user plays again.
       this.userStopped = false;
+      this.hasSource = false;
+      this.resumeAfterClear = null;
       this.resetting = true;
       this.pending = false;
       this.seekTarget = null;
@@ -169,16 +171,26 @@
     }
     reset() { this.settings = {...DEFAULTS}; this.userStopped = false; this.apply(); this.save(); }
     clear() {
+      if (this.hasSource) this.resumeAfterClear = this.wantPlay && !this.userStopped;
+      this.hasSource = false;
       this.seekTarget = null;
       this.generation++; this.wantPlay = false; this.pending = false; this.resetting = true;
       stopEffectiveRate(this.player);
       this.player.pause(); this.player.removeAttribute('src'); this.player.load();
     }
     load(source) {
+      // Follow what the previous clip was doing. The autoplay preference supplies
+      // only the initial state; manually started playback also carries forward.
+      const shouldPlay = this.resumeAfterClear ?? (this.hasSource
+        ? this.wantPlay && !this.userStopped
+        : this.settings.autoplay && !this.userStopped);
+      this.resumeAfterClear = null;
+      this.hasSource = true;
       this.seekTarget = null;
       this.generation++; this.resetting = true; this.pending = false;
-      this.wantPlay = this.settings.autoplay && !this.userStopped;
-      this.apply(); this.player.src = source; this.player.load(); this.apply();
+      this.wantPlay = shouldPlay;
+      stopEffectiveRate(this.player);
+      this.player.src = source; this.player.load(); this.apply();
     }
     async play() {
       this.resumeAutoplay();
@@ -193,7 +205,12 @@
     }
     pause() { this.wantPlay = false; this.holdStopped(); this.player.pause(); }
     seekBy(delta, duration) {
-      this.seekTarget = Math.min(duration, Math.max(0, (this.seekTarget ?? this.player.currentTime) + delta));
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      const next = (this.seekTarget ?? this.player.currentTime) + delta;
+      // Native loop wraps only on natural playback end, not a keyboard seek.
+      this.seekTarget = this.settings.loop
+        ? ((next % duration) + duration) % duration
+        : Math.min(duration, Math.max(0, next));
       this.flushSeek();
     }
     flushSeek() {
