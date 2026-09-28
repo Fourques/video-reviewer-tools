@@ -75,7 +75,7 @@ class AppRuntime:
     def should_close(self, busy=False, now=None):
         with self.lock:
             elapsed = (time.monotonic() if now is None else now) - self.last_empty
-            return self.auto_close and not busy and not self.sessions and elapsed >= (self.grace if self.seen_page else 120)
+            return self.auto_close and not busy and not self.sessions and elapsed >= (self.grace if self.seen_page else 900)
 
     def watch(self, server):
         def monitor():

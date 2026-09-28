@@ -45,6 +45,11 @@ class LifetimeTests(unittest.TestCase):
         runtime.leave("remote")
         self.assertFalse(runtime.should_close(now=runtime.last_empty + 10000))
 
+    def test_new_service_waits_for_first_remote_page(self):
+        runtime = AppRuntime(True)
+        self.assertFalse(runtime.should_close(now=runtime.last_empty + 899))
+        self.assertTrue(runtime.should_close(now=runtime.last_empty + 901))
+
 
 class DurationCacheTests(unittest.TestCase):
     def test_reopen_reuses_cache_and_changed_file_is_reprobed(self):
