@@ -122,7 +122,7 @@
 <div class="app">
   <aside>
     <div id="sideHead" class="side-head">
-      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.5</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
+      <div class="side-title-row"><h1>Fall 整段快速分类 <span class="meta">v1.6.6</span></h1><button id="toggleSideTools" class="compact-button">收起工具区</button></div>
       <div id="sideTools">
         <details class="path-details"><summary>查看联合复核目录</summary><div id="paths" class="path"></div></details>
         <div class="filters">
@@ -294,7 +294,7 @@ const state={videos:[],current:null,labels:{},pendingOnly:true,fallOnly:false,ca
 function formatTime(value){value=Math.max(0,Number(value)||0);const h=Math.floor(value/3600);value-=h*3600;const m=Math.floor(value/60);value-=m*60;return(h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+value.toFixed(3).padStart(6,'0')}
 function formatSize(bytes){const units=['B','KB','MB','GB'];let i=0;while(bytes>=1024&&i<units.length-1){bytes/=1024;i++}return `${bytes.toFixed(i?1:0)} ${units[i]}`}
 function escapeHtml(value){const node=document.createElement('div');node.textContent=value;return node.innerHTML}
-async function api(url,options={}){const response=await fetch(url,{keepalive:options.method==='POST',...options});const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
+async function api(url,options={}){let response;try{response=await fetch(url,{keepalive:options.method==='POST',...options})}catch(error){const failure=new Error('无法连接本地审核服务。请重新打开 App 并选择同一项目；已保存的审核进度会保留。');failure.network=true;failure.cause=error;throw failure}const data=await response.json();if(!response.ok||data.error)throw new Error(data.error||`HTTP ${response.status}`);return data}
 function labelName(label){return label==='fall'?'跌倒':label==='no_fall'?'不跌倒':label==='caregiver_fall'?'护工 Fall':'待判断'}
 function filenameStem(name){const dot=name.lastIndexOf('.');return dot>0?name.slice(0,dot):name}
 function loadDeviceSettings(){
@@ -416,9 +416,17 @@ function updateDecision(){const label=state.current?state.labels[state.current.i
 function setPreviewOverlay(message='',kind='loading'){$('previewOverlay').textContent=message;$('previewOverlay').classList.toggle('hidden',!message);$('previewOverlay').classList.toggle('error',kind==='error');$('previewOverlay').classList.toggle('startable',kind==='blocked')}
 function currentLabelStatus(id){return state.labels[id]?`当前标签：${labelName(state.labels[id])}`:'待判断'}
 const wait=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+async function previewApi(url,options={}){
+  for(let attempt=0;attempt<3;attempt++){
+    try{return await api(url,options)}catch(error){
+      if(!error.network||options.signal?.aborted||attempt===2)throw error;
+      await wait(350*(attempt+1));
+    }
+  }
+}
 async function requestCompatiblePreview(id,options={}){
-  let result=await api(`/api/proxy-status?id=${encodeURIComponent(id)}`,options);
-  if(result.status!=='ready'&&result.status!=='running')result=await api('/api/proxy',{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  let result=await previewApi(`/api/proxy-status?id=${encodeURIComponent(id)}`,options);
+  if(result.status!=='ready'&&result.status!=='running')result=await previewApi('/api/proxy',{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
   return result;
 }
 const previewMemory=new Map();
@@ -469,7 +477,7 @@ async function loadProxyPreview(id,token){
   warmUpcoming(id);
   try{
     let result=await requestCompatiblePreview(id),attempts=0;
-    while(result.status==='running'&&attempts++<240){await wait(250);if(token!==state.previewToken||state.current?.id!==id)return;result=await api(`/api/proxy-status?id=${encodeURIComponent(id)}`)}
+    while(result.status==='running'&&attempts++<240){await wait(250);if(token!==state.previewToken||state.current?.id!==id)return;result=await previewApi(`/api/proxy-status?id=${encodeURIComponent(id)}`)}
     if(token!==state.previewToken||state.current?.id!==id)return;
     if(result.status!=='ready')throw new Error(result.message||'兼容预览生成超时');
     player.dataset.videoId=id;playback.load(result.url);setPreviewOverlay('正在载入兼容预览…');

@@ -38,14 +38,16 @@ def safe_log(message):
 
 
 class AppRuntime:
-    def __init__(self, auto_close=False, grace=8.0):
+    def __init__(self, auto_close=False, grace=8.0, disconnect_grace=24 * 60 * 60):
         self.auto_close = auto_close
         self.grace = grace
+        self.disconnect_grace = disconnect_grace
         self.lock = threading.RLock()
         self.stopped = threading.Event()
         self.sessions = set()
         self.last_empty = time.monotonic()
         self.seen_page = False
+        self.last_empty_explicit = False
         self.progress = {"status": "idle", "stage": "等待选择项目", "done": 0, "total": None, "message": ""}
 
     def report(self, stage, done=0, total=None, message=""):
@@ -65,17 +67,23 @@ class AppRuntime:
             self.sessions.add(page)
             self.seen_page = True
 
-    def leave(self, page):
+    def leave(self, page, explicit=False):
         with self.lock:
             if page in self.sessions:
                 self.sessions.remove(page)
                 if not self.sessions:
                     self.last_empty = time.monotonic()
+                    self.last_empty_explicit = explicit
+            elif explicit and self.seen_page and not self.sessions:
+                # The browser's close beacon can arrive after its EventSource ended.
+                self.last_empty = time.monotonic()
+                self.last_empty_explicit = True
 
     def should_close(self, busy=False, now=None):
         with self.lock:
             elapsed = (time.monotonic() if now is None else now) - self.last_empty
-            return self.auto_close and not busy and not self.sessions and elapsed >= (self.grace if self.seen_page else 900)
+            grace = self.grace if self.last_empty_explicit else (self.disconnect_grace if self.seen_page else 900)
+            return self.auto_close and not busy and not self.sessions and elapsed >= grace
 
     def watch(self, server):
         def monitor():
@@ -140,7 +148,7 @@ class RuntimeHandlerMixin:
             # Drain beacon body so HTTP implementations can reuse connections.
             self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 1024))
             if runtime:
-                runtime.leave(parse_qs(route.query).get("id", [""])[0][:100])
+                runtime.leave(parse_qs(route.query).get("id", [""])[0][:100], explicit=True)
             self.runtime_json({"ok": True})
             return True
         return False

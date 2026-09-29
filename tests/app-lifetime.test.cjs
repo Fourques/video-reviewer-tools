@@ -18,5 +18,23 @@ test('late runtime response cannot open a connection after page close',async()=>
  assert.equal(connections.length,0);
  events.pageshow();assert.equal(connections.length,1);
  events.pagehide();assert.equal(connections[0].closed,true);assert.equal(beacons.length,1);
- events.pageshow();assert.equal(connections.length,2);
+  events.pageshow();assert.equal(connections.length,2);
+});
+test('a failed first runtime request retries before the page is treated as absent',async()=>{
+ const events={},timers=[],connections=[];let attempts=0;
+ vm.runInNewContext(source,{
+  fetch:()=>++attempts===1?Promise.reject(new TypeError('Failed to fetch')):Promise.resolve({json:()=>Promise.resolve({autoClose:true})}),
+  setTimeout:fn=>{timers.push(fn);return timers.length},
+  clearTimeout:()=>{},
+  addEventListener:(event,fn)=>events[event]=fn,
+  crypto:{randomUUID:()=>String(connections.length)},
+  EventSource:class{constructor(url){this.url=url;connections.push(this)}close(){this.closed=true}},
+  navigator:{sendBeacon:()=>true}
+ });
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(timers.length,1);assert.equal(connections.length,0);
+ timers.shift()();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(attempts,2);assert.equal(connections.length,1);
+ events.pagehide();assert.equal(connections[0].closed,true);
 });

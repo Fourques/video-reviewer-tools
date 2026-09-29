@@ -11,11 +11,28 @@ from urllib.request import build_opener, ProxyHandler, Request
 from unittest.mock import patch
 
 import start
-from app_runtime import LocalHTTPServer
+from app_runtime import AppRuntime, LocalHTTPServer
 from http.server import BaseHTTPRequestHandler
 
 
 class LaunchLifetimeTests(unittest.TestCase):
+    def test_temporary_page_disconnect_does_not_close_an_open_review(self):
+        runtime = AppRuntime(auto_close=True, grace=8, disconnect_grace=3600)
+        runtime.enter('review')
+        runtime.leave('review')  # EventSource may drop while the Mac sleeps.
+        self.assertFalse(runtime.should_close(now=runtime.last_empty + 9))
+        runtime.enter('review')  # The browser reconnects with the same page ID.
+        self.assertFalse(runtime.should_close(now=runtime.last_empty + 3601))
+        runtime.leave('review', explicit=True)
+        self.assertTrue(runtime.should_close(now=runtime.last_empty + 9))
+
+    def test_late_close_beacon_still_releases_the_service(self):
+        runtime = AppRuntime(auto_close=True, grace=8, disconnect_grace=3600)
+        runtime.enter('review')
+        runtime.leave('review')
+        runtime.leave('review', explicit=True)
+        self.assertTrue(runtime.should_close(now=runtime.last_empty + 9))
+
     def test_binding_does_not_wait_for_reverse_dns(self):
         with patch('socket.getfqdn', side_effect=AssertionError('No DNS needed')):
             server = LocalHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
