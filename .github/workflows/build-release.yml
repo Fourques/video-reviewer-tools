@@ -41,7 +41,16 @@ jobs:
         run: python -m pip install -r requirements-build.txt
       - name: Install Linux desktop runtime dependencies
         if: matrix.kind == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libgl1 libxcb-cursor0 libxkbcommon-x11-0 xvfb ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libxcb-util1 libxcb-randr0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-shape0 libxcb-xkb1 libx11-xcb1 xvfb ffmpeg
+      - name: Verify Linux desktop libraries
+        if: matrix.kind == 'linux'
+        run: |
+          desktop_plugin=$(python -c 'from PySide6.QtCore import QLibraryInfo; print(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath) + "/platforms/libqxcb.so")')
+          desktop_links=$(ldd "$desktop_plugin")
+          echo "$desktop_links"
+          if [[ "$desktop_links" == *"not found"* ]]; then exit 1; fi
       - name: Syntax checks
         run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py project_app.py project_store.py project_schema.py desktop_window.py app_runtime.py scan_support.py
       - name: Unit tests
@@ -60,6 +69,7 @@ jobs:
         env:
           QTWEBENGINE_CHROMIUM_FLAGS: --no-sandbox
           QT_API: pyside6
+          QT_DEBUG_PLUGINS: "1"
         run: xvfb-run -a python tests/test_native_integration.py
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
