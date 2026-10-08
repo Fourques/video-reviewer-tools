@@ -12,6 +12,11 @@ def main():
     import reviewer
     import start
     import webview
+    # Fail before creating a window/server if desktop system libraries are absent.
+    # A browser fallback is useful for users, but is not a native test success.
+    if sys.platform.startswith('linux'):
+        os.environ.setdefault('QT_API', 'pyside6')
+        from qtpy import QtGui, QtWebEngineWidgets  # noqa: F401
 
     with tempfile.TemporaryDirectory(prefix='reviewer-native-') as directory:
         root = Path(directory)
@@ -48,8 +53,11 @@ def main():
                 errors.append(str(exc))
             finally:
                 if window:
-                    window.destroy()
-                else:
+                    try:
+                        window.destroy()
+                    except Exception as exc:
+                        errors.append(f'Native window could not close: {exc}')
+                if not window or errors:
                     from urllib.request import Request, urlopen
                     try:
                         urlopen(Request(f'http://127.0.0.1:{port}/api/shutdown', data=b'{}', headers={'Content-Type': 'application/json'}), timeout=3).close()

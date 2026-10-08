@@ -41,7 +41,7 @@ jobs:
         run: python -m pip install -r requirements-build.txt
       - name: Install Linux desktop runtime dependencies
         if: matrix.kind == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 xvfb ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libopengl0 libgl1 libxcb-cursor0 libxkbcommon-x11-0 xvfb ffmpeg
       - name: Syntax checks
         run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py project_app.py project_store.py project_schema.py desktop_window.py app_runtime.py scan_support.py
       - name: Unit tests
@@ -56,8 +56,10 @@ jobs:
           REVIEWER_PLAYWRIGHT="$RUNNER_TEMP/reviewer-browser/node_modules/playwright" node tests/workbench.test.cjs
       - name: Native desktop integration (Linux)
         if: matrix.kind == 'linux'
+        timeout-minutes: 3
         env:
           QTWEBENGINE_CHROMIUM_FLAGS: --no-sandbox
+          QT_API: pyside6
         run: xvfb-run -a python tests/test_native_integration.py
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
