@@ -70,13 +70,8 @@ class LauncherApp:
         if not path.is_dir():
             raise ValueError(f"目录不存在：{path}")
         try:
-            children = sorted(
-                (
-                    item for item in path.iterdir()
-                    if not item.name.startswith(".") and item.is_dir()
-                ),
-                key=lambda item: item.name.casefold(),
-            )
+            with os.scandir(path) as entries:
+                children = sorted((path / entry.name for entry in entries if not entry.name.startswith('.') and entry.is_dir()), key=lambda item: item.name.casefold())
         except PermissionError as exc:
             raise ValueError(f"没有权限读取目录：{path}") from exc
         parent = path.parent if path.parent != path else None
@@ -145,10 +140,11 @@ class LauncherServer(LocalHTTPServer):
         if not self.start_lock.acquire(blocking=False):
             raise ValueError("正在检索视频，请等待当前扫描完成")
         self.runtime.report("准备项目", 0, None, selection["source"])
+        self.runtime.skip_metadata_requested.clear()
 
         def prepare():
             try:
-                app, handler = self.prepare_project(selection, self.runtime.report)
+                app, handler = self.prepare_project({**selection, '_skip_metadata': self.runtime.skip_metadata_requested}, self.runtime.report)
                 if self.runtime.stopped.is_set():
                     close = getattr(app, "close", None)
                     if close:
@@ -157,6 +153,7 @@ class LauncherServer(LocalHTTPServer):
                 self.app = app
                 self.RequestHandlerClass = handler
                 with self.runtime.lock:
+                    self.runtime.scan_updated = time.monotonic()
                     self.runtime.progress = {"status": "ready", "stage": "检索完成", "done": len(app.videos), "total": len(app.videos), "message": "即将进入审核页面"}
                 safe_log(f"已找到 {len(app.videos)} 个视频，审核页面已就绪。")
             except Exception as exc:

@@ -6,7 +6,7 @@ import math
 import re
 import uuid
 
-VERSION = "2.0.4"
+VERSION = "2.0.5"
 KEYS = {"play": "s", "loop": "w", "back": "a", "forward": "d", "stepBack": "arrowleft", "stepForward": "arrowright", "previous": "[", "next": "]", "addSegment": "space", "complete": "enter", "undo": "backspace", "review": "u"}
 KEYS.update({action: '' for action in ('settings', 'organize', 'search', 'rescan', 'proxy', 'proxyAll', 'fullscreen', 'mute', 'setStart', 'setEnd', 'previewSegment', 'saveView', 'switchProject', 'clearLabel', 'previousDevice', 'nextDevice')})
 

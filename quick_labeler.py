@@ -296,6 +296,8 @@ class LabelApp:
             with path.open(encoding="utf-8-sig", newline="") as handle:
                 reader = csv.DictReader(handle)
                 for index, row in enumerate(reader):
+                    if index % 256 == 0 and hasattr(self, 'check_metadata_cancel'):
+                        self.check_metadata_cancel()
                     if index % 2000 == 0:
                         self.report("读取原始标签", index, None, path.name)
                     wanted_keys = [key for key in self._metadata_keys(str(row.get(file_column, ""))) if key in video_keys]

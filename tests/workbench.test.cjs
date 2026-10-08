@@ -25,6 +25,14 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   const page=await browser.newPage({viewport:{width:1366,height:768}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(base);await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
   assert.equal(await page.evaluate(()=>state.videos.length),8);
+  // Large queues remain virtualized, even while the full project is fetched.
+  await page.route('**/api/project',async route=>{const response=await route.fetch();const data=await response.json();const original=data.videos[0];data.videos.push(...Array.from({length:11992},(_,i)=>({...original,id:`synthetic-${i}`,name:`synthetic-${i}.mp4`,relative:`synthetic-${i}.mp4`})));await route.fulfill({response,json:data});});
+  const largeBegan=Date.now();await page.reload();await page.waitForFunction(()=>state.videos.length===12000&&deck.readyToReview);
+  assert.equal(await page.locator('#queueCount').textContent(),'12000 条');assert(await page.locator('.video-item').count()<30);
+  await page.locator('#sort').selectOption('device');await page.locator('#search').fill('synthetic-11990.mp4');await page.waitForFunction(()=>document.getElementById('queueCount').textContent==='1 条');
+  assert(await page.locator('.video-item.active').count(),'Current video disappeared outside filter');
+  await page.unroute('**/api/project');await page.reload();await page.waitForFunction(()=>state.videos.length===8&&deck.readyToReview);
+  console.log(JSON.stringify({largeQueueEntries:12000,largeQueueFlowMs:Date.now()-largeBegan}));
   await page.screenshot({path:path.join(root,'workspace.png')});
   for(const size of [{width:1920,height:1080},{width:1366,height:768},{width:1093,height:614},{width:1024,height:640}]){
    await page.setViewportSize(size);await wait(100);
@@ -60,7 +68,12 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.locator('[data-close=exportDialog]').click();await page.screenshot({path:path.join(root,'intervals.png')});
   assert.deepEqual(errors,[]);
   await page.reload();await page.waitForFunction(()=>deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
-  await page.locator('#switchProject').click();await page.waitForSelector('#start');await page.screenshot({path:path.join(root,'project-center.png')});
+  // Show a slow CSV stage and exercise the skip control in the actual page.
+  let skipped=false;await page.route('**/api/startup-status',route=>route.fulfill({json:{status:skipped?'ready':'scanning',stage:'匹配 CSV 字段',done:12000,total:null,message:'index.csv · CSV 行数',elapsedSeconds:25,idleSeconds:21,canSkipMetadata:!skipped}}));
+  await page.route('**/api/startup-skip-metadata',route=>{skipped=true;return route.fulfill({json:{ok:true}});});
+  await page.goto(base+'/projects');await page.locator('#skipCsv').waitFor({state:'visible'});assert.equal(await page.locator('#scanStage').textContent(),'匹配 CSV 字段');await page.locator('#skipCsv').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
+  await page.unroute('**/api/startup-status');await page.unroute('**/api/startup-skip-metadata');await page.locator('#switchProject').click();await page.waitForSelector('#start');
+  await page.screenshot({path:path.join(root,'project-center.png')});
   await page.locator('#source').fill(source);await page.locator('#start').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
   await page.waitForFunction(()=>globalThis.videoReviewerSessionReady?.());
   await wait(200);
@@ -72,6 +85,6 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   if(service.exitCode===null)console.error('Lifetime diagnostic:',await (await fetch(base+'/api/runtime')).json());
   assert.equal(service.exitCode,0,'Last tab close did not release service');
   console.log(JSON.stringify({status:'passed',screenshots:root,checks:'layouts, labels, playback state, undo, queue retry, segments, export, resume, project switch, shutdown'}));
- }catch(error){console.error(output);throw error;}
+ }catch(error){console.error(output.slice(-20000));throw error;}
  finally{if(browser)await browser.close();if(service.exitCode===null)service.kill('SIGTERM');fs.writeFileSync(path.join(root,'service.log'),output);}
 })().catch(error=>{console.error(error);process.exitCode=1;});

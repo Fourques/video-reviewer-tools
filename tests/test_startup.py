@@ -70,6 +70,36 @@ class DurationCacheTests(unittest.TestCase):
 
 
 class StartupHttpTests(unittest.TestCase):
+    def test_csv_skip_request_reaches_scanning_worker_without_project_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            html = source / 'launcher.html'
+            html.write_text('<h1>Scan</h1>')
+            stopped = threading.Event()
+            def prepare(selection, report):
+                report('匹配 CSV 字段', 12000, None, 'index.csv')
+                self.assertTrue(selection['_skip_metadata'].wait(3))
+                stopped.set()
+                return SimpleNamespace(videos=[]), LabelHandler
+            server = LauncherServer(('127.0.0.1', 0), LauncherApp({}, html, lambda _: None), prepare)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            opener = build_opener(ProxyHandler({}))
+            base = f'http://127.0.0.1:{server.server_port}'
+            try:
+                server.start_selection({'source': str(source)})
+                with opener.open(base + '/api/startup-status', timeout=2) as response:
+                    self.assertTrue(json.load(response)['canSkipMetadata'])
+                with opener.open(Request(base + '/api/startup-skip-metadata', data=b'{}'), timeout=2) as response:
+                    self.assertTrue(json.load(response)['ok'])
+                self.assertTrue(stopped.wait(2))
+            finally:
+                server.runtime.skip_metadata_requested.set()
+                server.runtime.stopped.set()
+                server.shutdown()
+                server.server_close()
+                worker.join(3)
+
     def test_scan_status_stays_reachable_and_error_can_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

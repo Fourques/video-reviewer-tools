@@ -44,6 +44,9 @@ class AppRuntime:
         self.disconnect_grace = disconnect_grace
         self.lock = threading.RLock()
         self.stopped = threading.Event()
+        self.skip_metadata_requested = threading.Event()
+        self.scan_started = time.monotonic()
+        self.scan_updated = self.scan_started
         self.sessions = set()
         self.closed_pages = set()
         self.last_empty = time.monotonic()
@@ -57,11 +60,15 @@ class AppRuntime:
                 raise RuntimeError("工具正在退出")
             if self.progress["status"] == "ready":
                 return  # The initial progress page stays ready during later rescans.
+            if self.progress['status'] != 'scanning':
+                self.scan_started = time.monotonic()
+            self.scan_updated = time.monotonic()
             self.progress = {"status": "scanning", "stage": stage, "done": done, "total": total, "message": message}
 
     def snapshot(self):
         with self.lock:
-            return dict(self.progress)
+            now = time.monotonic()
+            return {**self.progress, 'elapsedSeconds': int(now - self.scan_started), 'idleSeconds': int(now - self.scan_updated), 'canSkipMetadata': self.progress['status'] == 'scanning' and self.progress['stage'] in {'寻找 CSV 对照', '匹配 CSV 字段', '读取原始标签'} and not self.skip_metadata_requested.is_set(), 'metadataSkipRequested': self.skip_metadata_requested.is_set()}
 
     def enter(self, page):
         with self.lock:
@@ -155,6 +162,15 @@ class RuntimeHandlerMixin:
     def runtime_post(self):
         route = urlparse(self.path)
         runtime = getattr(self.server, "runtime", None)
+        if route.path == '/api/startup-skip-metadata' and runtime:
+            self.rfile.read(min(int(self.headers.get('Content-Length', '0')), 1024))
+            with runtime.lock:
+                if runtime.progress['status'] != 'scanning':
+                    self.runtime_json({'error': '项目已不在载入阶段'}, 409)
+                else:
+                    runtime.skip_metadata_requested.set()
+                    self.runtime_json({'ok': True, 'message': '已请求跳过本次 CSV；原配置和审核进度保留'})
+            return True
         if route.path == "/api/session-close":
             # Drain beacon body so HTTP implementations can reuse connections.
             self.rfile.read(min(int(self.headers.get("Content-Length", "0")), 1024))
