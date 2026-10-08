@@ -280,6 +280,7 @@ function adopt(document, keepCurrent=true) {
   const current=state.videos.find(item=>item.id===(id||document.cursor))||state.videos.find(item=>item.annotation.status==='pending')||state.videos[0];
   if(current)selectVideo(current.id);else{$('mediaOverlay').textContent='当前目录没有视频，可在项目设置添加输入目录';renderList();}
   if(document.warning)notice(document.warning,true);
+  else if(document.inputWarnings?.length)notice(document.inputWarnings.join('；'),true);
   else if(document.missing.length)notice(`有 ${document.missing.length} 个已记录视频不在当前目录中；标注保留。请检查挂载或额外输入目录。`,true);
 }
 async function refresh() {await flush();adopt(await api('/api/project'));}

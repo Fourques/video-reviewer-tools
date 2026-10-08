@@ -170,6 +170,7 @@ class ProjectApp(LabelApp):
             self._scan()
 
     def _scan(self):
+        self.input_warnings = []
         roots = [(self.source, None)]
         roots.extend((self.resolve(value), None) for value in self.config.get("inputs", []))
         for label in self.config["labels"]:
@@ -185,7 +186,7 @@ class ProjectApp(LabelApp):
         for directory, label in unique.items():
             if not directory.is_dir():
                 if label is None:
-                    raise ValueError(f"输入目录不可访问：{directory}；请在项目设置中重新绑定")
+                    self.input_warnings.append(f'输入目录不可访问：{directory}；该目录进度保留，可在设置中重新绑定')
                 continue
             with os.scandir(directory) as entries:
                 for entry in entries:
@@ -196,6 +197,17 @@ class ProjectApp(LabelApp):
                         found.append((directory / entry.name, label, stat.st_size, stat.st_mtime_ns))
                         if len(found) % 100 == 0:
                             self.report("检索当前目录", len(found), None, directory.name)
+        # Existing project members retain their canonical location when output
+        # bindings change. Do not recursively discover anything in those folders.
+        seen_paths = {self.location(path) for path, *_ in found}
+        for asset in self.state['assets'].values():
+            if asset['path'] in seen_paths:
+                continue
+            path = self.resolve(asset['path'])
+            if path.is_file():
+                stat = path.stat()
+                found.append((path, asset.get('originLabel'), stat.st_size, stat.st_mtime_ns))
+                seen_paths.add(asset['path'])
         found.sort(key=lambda item: (item[0].name.casefold(), str(item[0].parent)))
         video_keys = {key for path, *_ in found for key in (path.name.casefold(), path.stem.casefold())}
         self._load_metadata(video_keys)
@@ -315,7 +327,7 @@ class ProjectApp(LabelApp):
     def document(self):
         with self.lock:
             missing = [value["name"] for key, value in self.state["assets"].items() if key not in self.video_by_id]
-            return {"version": VERSION, "source": str(self.source), "config": self.config, "videos": self.public_videos(), "cursor": self.state.get("cursor"), "views": self.state["views"], "seq": self.state["seq"], "round": self.state["round"], "migration": self.migration, "warning": self.store.warning, "metadataWarning": self.metadata_warning, "missing": missing, **self.metadata_info()}
+            return {"version": VERSION, "source": str(self.source), "config": self.config, "videos": self.public_videos(), "cursor": self.state.get("cursor"), "views": self.state["views"], "seq": self.state["seq"], "round": self.state["round"], "migration": self.migration, "warning": self.store.warning, "metadataWarning": self.metadata_warning, 'inputWarnings': self.input_warnings, "missing": missing, **self.metadata_info()}
 
     def save_annotation(self, payload):
         with self.lock:

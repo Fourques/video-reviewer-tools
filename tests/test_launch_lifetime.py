@@ -33,6 +33,14 @@ class LaunchLifetimeTests(unittest.TestCase):
         runtime.leave('review', explicit=True)
         self.assertTrue(runtime.should_close(now=runtime.last_empty + 9))
 
+    def test_late_connection_cannot_revive_explicitly_closed_page(self):
+        runtime = AppRuntime(auto_close=True)
+        runtime.enter('review')
+        runtime.leave('review', explicit=True)
+        self.assertFalse(runtime.enter('review'))
+        self.assertFalse(runtime.sessions)
+        self.assertTrue(runtime.should_close(now=runtime.last_empty + 9))
+
     def test_binding_does_not_wait_for_reverse_dns(self):
         with patch('socket.getfqdn', side_effect=AssertionError('No DNS needed')):
             server = LocalHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)

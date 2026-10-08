@@ -45,6 +45,7 @@ class AppRuntime:
         self.lock = threading.RLock()
         self.stopped = threading.Event()
         self.sessions = set()
+        self.closed_pages = set()
         self.last_empty = time.monotonic()
         self.seen_page = False
         self.last_empty_explicit = False
@@ -64,11 +65,18 @@ class AppRuntime:
 
     def enter(self, page):
         with self.lock:
+            if page in self.closed_pages:
+                return False  # A pending connection arrived after its close beacon.
             self.sessions.add(page)
             self.seen_page = True
+            return True
 
     def leave(self, page, explicit=False):
         with self.lock:
+            if explicit:
+                self.closed_pages.add(page)
+                if len(self.closed_pages) > 4096:
+                    self.closed_pages = {page}
             if page in self.sessions:
                 self.sessions.remove(page)
                 if not self.sessions:
@@ -114,7 +122,8 @@ class RuntimeHandlerMixin:
             self.wfile.write(body)
             return True
         if route.path == "/api/runtime":
-            self.runtime_json({"autoClose": bool(runtime and runtime.auto_close)})
+            with runtime.lock if runtime else threading.RLock():
+                self.runtime_json({"autoClose": bool(runtime and runtime.auto_close), 'connectedPages': len(runtime.sessions) if runtime else 0, 'lastCloseExplicit': bool(runtime and runtime.last_empty_explicit)})
             return True
         if route.path == "/api/startup-status":
             self.runtime_json(runtime.snapshot() if runtime else {"status": "ready"})
@@ -124,7 +133,9 @@ class RuntimeHandlerMixin:
             if not page:
                 self.runtime_json({"error": "Missing page ID"}, 400)
                 return True
-            runtime.enter(page)
+            if not runtime.enter(page):
+                self.runtime_json({'error': 'Page already closed'}, 409)
+                return True
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")

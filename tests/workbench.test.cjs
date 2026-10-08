@@ -21,7 +21,7 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
  let browser;
  try{
   for(let i=0;i<100;i++){try{if((await fetch(base+'/api/project')).ok)break}catch{}await wait(100);}
-  browser=await chromium.launch({headless:true,executablePath:process.env.REVIEWER_CHROMIUM||undefined,args:['--no-sandbox']});
+  browser=await chromium.launch({headless:true,channel:process.env.REVIEWER_CHROMIUM?undefined:'chromium',executablePath:process.env.REVIEWER_CHROMIUM||undefined,args:['--no-sandbox']});
   const page=await browser.newPage({viewport:{width:1366,height:768}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(base);await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
   assert.equal(await page.evaluate(()=>state.videos.length),8);
@@ -62,7 +62,14 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.reload();await page.waitForFunction(()=>deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
   await page.locator('#switchProject').click();await page.waitForSelector('#start');await page.screenshot({path:path.join(root,'project-center.png')});
   await page.locator('#source').fill(source);await page.locator('#start').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
+  await page.waitForFunction(()=>globalThis.videoReviewerSessionReady?.());
+  await wait(200);
+  // CDP's closeTarget can terminate the renderer without pagehide/beacon in
+  // headless-shell. Leave the document normally to exercise its real lifecycle;
+  // owned app-window close is separately covered by native integration.
+  await page.goto('about:blank');
   await page.close({runBeforeUnload:true});for(let i=0;i<200&&service.exitCode===null;i++)await wait(100);
+  if(service.exitCode===null)console.error('Lifetime diagnostic:',await (await fetch(base+'/api/runtime')).json());
   assert.equal(service.exitCode,0,'Last tab close did not release service');
   console.log(JSON.stringify({status:'passed',screenshots:root,checks:'layouts, labels, playback state, undo, queue retry, segments, export, resume, project switch, shutdown'}));
  }catch(error){console.error(output);throw error;}

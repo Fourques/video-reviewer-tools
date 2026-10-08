@@ -141,6 +141,23 @@ class ProjectTests(unittest.TestCase):
         self.assertFalse(list(self.source.rglob("*.csv")))
         self.assertFalse(app.export_plan()["items"])
 
+    def test_output_change_does_not_hide_previous_project_members(self):
+        app = self.app()
+        identity = app.videos[0].id
+        self.save(app, label='fall', status='done')
+        app._export(app.export_plan()['items'])
+        app.configure({'seq': app.state['seq'], 'config': {**app.config, 'output': 'new-output'}})
+        self.assertIn(identity, app.video_by_id)
+        app._export(app.export_plan()['items'])
+        self.assertEqual(app.get_video(identity).path, self.source / 'new-output/fall/one.mp4')
+
+    def test_unavailable_extra_mount_can_be_rebound_in_settings(self):
+        app = self.app()
+        app.config['inputs'] = ['unavailable-mount']
+        app.scan()
+        self.assertEqual(len(app.videos), 2)
+        self.assertTrue(app.document()['inputWarnings'])
+
     def test_copy_retry_does_not_duplicate_successful_outputs(self):
         app = self.app()
         app.config["exportMode"] = "copy"
