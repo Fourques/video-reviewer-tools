@@ -81,7 +81,7 @@ def validate(config, previous=None, used=None):
         label["folder"] = folder
         label["active"] = bool(label.get("active", True))
         key = str(label.get("key", "")).lower().strip()
-        if key and (len(key) != 1 or key in seen_keys):
+        if key and (len(key) != 1 or (label['active'] and key in seen_keys)):
             raise ValueError(f"标签快捷键必须是未占用的单个键：{key}")
         if key and label["active"]:
             seen_keys[key] = identity

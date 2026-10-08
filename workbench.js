@@ -7,6 +7,7 @@ const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.ran
 const time = value => {value = Math.max(0, Number(value)||0);return `${String(Math.floor(value/60)).padStart(2,'0')}:${(value%60).toFixed(2).padStart(5,'0')}`;};
 const keyName = key => ({space:'Space',enter:'Enter',backspace:'⌫',arrowleft:'←',arrowright:'→'}[key] || String(key||'—').toUpperCase());
 const statusName = value => ({pending:'未审核',done:'已完成',review:'待复核'}[value] || value);
+const collator = new Intl.Collator(undefined, {numeric:true});
 const ACTIONS = {play:'播放 / 暂停',loop:'循环',back:'按秒快退',forward:'按秒快进',stepBack:'后退 1 秒',stepForward:'前进 1 秒',previous:'上一视频',next:'下一视频',addSegment:'添加区间',complete:'完成并下一条',undo:'撤销上一步',review:'待复核并下一条'};
 Object.assign(ACTIONS,{settings:'项目设置',organize:'整理文件',search:'搜索视频',rescan:'刷新列表',proxy:'兼容当前视频',proxyAll:'后台兼容全部',fullscreen:'视频全屏',mute:'静音',setStart:'用当前画面设起点',setEnd:'用当前画面设终点',previewSegment:'预览区间',saveView:'保存筛选视图',switchProject:'切换项目',clearLabel:'清除整段标签',previousDevice:'上一设备',nextDevice:'下一设备'});
 const state = {videos:[], config:null, current:null, seq:0, pending:[], draining:false, failed:false, info:null, infoPromise:null, settings:null, keys:null, draftId:null, folderTarget:null, folderMode:'directory', visibleRows:[], rowOffsets:[], personal:{}};
@@ -108,7 +109,7 @@ function matching(video) {
   const searchable=[video.name,device(video),...video.metadataLabels.map(item=>`${item.column} ${item.value}`),video.annotation.note].join(' ').toLocaleLowerCase();
   return (!query||searchable.includes(query))&&($('statusFilter').value==='all'||video.annotation.status===$('statusFilter').value)&&(!$('labelFilter').value||video.annotation.label===$('labelFilter').value||video.annotation.segments.some(item=>item.label===$('labelFilter').value));
 }
-function ordered() {return [...state.videos].sort((a,b)=>($('sort').value==='device'?device(a).localeCompare(device(b),undefined,{numeric:true}):0)||a.name.localeCompare(b.name,undefined,{numeric:true})||a.relative.localeCompare(b.relative));}
+function ordered() {const grouped=$('sort').value==='device';return [...state.videos].sort((a,b)=>(grouped?collator.compare(device(a),device(b)):0)||collator.compare(a.name,b.name)||collator.compare(a.relative,b.relative));}
 function filtered() {return ordered().filter(matching);}
 function nextVideo(delta) {
   const list=ordered(),position=list.findIndex(item=>item.id===state.current?.id);
@@ -314,6 +315,7 @@ $('labelEditor').onclick=event=>{const index=event.target.dataset.delete;if(inde
 $('newLabel').onclick=()=>{const id=`label_${uid().replace(/-/g,'').slice(0,12)}`;state.settings.labels.push({id,name:'新标签',description:'',color:'#86afe9',key:'',folder:id,active:true});renderLabelEditor();};
 function captureKey(event) {if(event.ctrlKey||event.metaKey||event.altKey)return null;if(['Shift','Control','Alt','Meta','Tab','Escape','CapsLock'].includes(event.key))return null;return event.key===' '?'space':event.key.toLowerCase();}
 function renderKeyEditor() {
+  state.keys.labels=Object.fromEntries(state.settings.labels.filter(item=>item.active).map(item=>[item.id,state.keys.labels[item.id]??item.key]));
   const fields=[...Object.entries(ACTIONS).map(([id,name])=>({id,name,kind:'shortcuts'})),...state.settings.labels.filter(item=>item.active).map(item=>({id:item.id,name:item.name,kind:'labels'}))];
   $('shortcutEditor').innerHTML=fields.map(field=>`<label>${escapeText(field.name)}<input class="shortcut-key" readonly data-kind="${field.kind}" data-action="${field.id}" value="${keyName(state.keys[field.kind][field.id])}" aria-label="${escapeText(field.name)}的快捷键"></label>`).join('');
   document.querySelectorAll('#shortcutEditor input').forEach(input=>input.onkeydown=event=>{event.preventDefault();event.stopPropagation();const key=event.key==='Delete'?'':captureKey(event);if(key===null)return;const before=state.keys[input.dataset.kind][input.dataset.action];state.keys[input.dataset.kind][input.dataset.action]=key;try{validKeys(state.keys);$('settingsError').textContent='';input.value=keyName(key);}catch(error){state.keys[input.dataset.kind][input.dataset.action]=before;$('settingsError').textContent=error.message;}});
@@ -331,7 +333,7 @@ function readConfig() {
 }
 $('settings').onclick=()=>openSettings();$('playbackSettings').onclick=()=>$('playbackDialog').showModal();$('openKeys').onclick=()=>{$('playbackDialog').close();openSettings('keys');};
 $('saveConfig').onclick=async()=>{try{await flush();const config=readConfig();const fresh=await api('/api/project');adopt(await post('/api/project-config',{seq:fresh.seq,configRevision:state.settings.revision||0,config}));$('settingsDialog').close();notice('项目规则已保存，原有标注保留');}catch(error){$('settingsError').textContent=error.message;}};
-$('savePersonalKeys').onclick=()=>{try{state.keys.seekSeconds=Number($('configSeek').value);validKeys(state.keys);state.personal=clone(state.keys);localStorage.setItem(projectKey('keys'),JSON.stringify(state.personal));$('settingsError').textContent='个人快捷键已保存；不影响同事的项目默认值';renderAnnotation();}catch(error){$('settingsError').textContent=error.message;}};
+$('savePersonalKeys').onclick=()=>{try{state.keys.seekSeconds=Number($('configSeek').value);if(!Number.isFinite(state.keys.seekSeconds)||state.keys.seekSeconds<.04||state.keys.seekSeconds>86400)throw new Error('跳转秒数需在 0.04–86400 之间');validKeys(state.keys);state.personal=clone(state.keys);localStorage.setItem(projectKey('keys'),JSON.stringify(state.personal));$('settingsError').textContent='个人快捷键已保存；不影响同事的项目默认值';$('back').textContent=`−${effectiveKeys().seekSeconds}s`;$('forward').textContent=`+${effectiveKeys().seekSeconds}s`;renderAnnotation();}catch(error){$('settingsError').textContent=error.message;}};
 $('resetPersonalKeys').onclick=()=>{state.personal={};localStorage.removeItem(projectKey('keys'));state.keys=clone(effectiveKeys());$('configSeek').value=state.keys.seekSeconds;renderKeyEditor();renderAnnotation();};
 function download(name,data) {const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('exportTemplate').onclick=()=>{try{const config=readConfig();for(const key of ['id','metadataConfig','destinations','inputs'])delete config[key];config.output='output';config.clipOutput='output/clips';download('video-reviewer-template.json',config);}catch(error){$('settingsError').textContent=error.message;}};
