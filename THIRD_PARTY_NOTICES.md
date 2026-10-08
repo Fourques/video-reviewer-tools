@@ -2,6 +2,17 @@
 
 发布版内置以下第三方软件，用户不需要另行安装。
 
+## pywebview 6.2.1 与平台窗口组件
+
+- pywebview：https://github.com/r0x0r/pywebview/tree/6.2.1（BSD 3-Clause）
+- Windows 使用系统 WebView2 / .NET，macOS 使用系统 WebKit；平台依赖的许可证随包放在 `licenses/`。
+- Linux 使用 QtPy 2.4.3（MIT）、PySide6 / Shiboken6 6.11.0 和 Qt 6.11（相关运行模块采用 LGPLv3）。
+- Qt 许可证：https://doc.qt.io/qt-6/licensing.html
+- 对应 PySide6 / Shiboken6 源码：https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.0-src/
+- 对应 Qt 源码：https://download.qt.io/official_releases/qt/6.11/6.11.0/single/
+
+Linux 包采用可替换的动态库目录（不是静态链接或单文件嵌入 Qt），允许依照 LGPL 替换、修改库及为调试这些修改进行反向工程。原始许可证与第三方声明一并随发布包保留；Qt/PySide6 未作源码修改。构建方式与依赖版本见仓库 `VideoReviewer.spec` / `requirements-build.txt`。本项目没有将自身源码改成 Qt 的许可证。
+
 ## imageio-ffmpeg 0.6.0
 
 - 项目：https://github.com/imageio/imageio-ffmpeg

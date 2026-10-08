@@ -38,12 +38,24 @@ jobs:
           cache-dependency-path: requirements-build.txt
       - name: Install build dependencies
         run: python -m pip install -r requirements-build.txt
+      - name: Install Linux desktop runtime dependencies
+        if: matrix.kind == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libxkbcommon-x11-0 xvfb ffmpeg
       - name: Syntax checks
-        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py app_runtime.py scan_support.py
+        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py project_app.py project_store.py project_schema.py desktop_window.py app_runtime.py scan_support.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Playback regression tests
         run: node --test tests/playback.test.cjs tests/app-lifetime.test.cjs
+      - name: Browser integration tests
+        if: matrix.kind == 'linux'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/reviewer-browser" playwright@1.58.2
+          "$RUNNER_TEMP/reviewer-browser/node_modules/.bin/playwright" install --with-deps chromium
+          REVIEWER_PLAYWRIGHT="$RUNNER_TEMP/reviewer-browser/node_modules/playwright" node tests/workbench.test.cjs
+      - name: Native desktop integration (Linux)
+        if: matrix.kind == 'linux'
+        run: xvfb-run -a python tests/test_native_integration.py
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
       - name: Verify bundled FFmpeg and startup (Windows)

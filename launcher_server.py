@@ -95,8 +95,17 @@ class LauncherApp:
         if not source.is_dir():
             raise ValueError(f"项目目录不存在：{source}")
         mode = str(payload.get("mode", ""))
-        if mode not in {"clip", "label"}:
+        if mode not in {"clip", "label", "project"}:
             raise ValueError("请选择审核功能")
+        if mode == "project":
+            selected_preset = payload.get("preset", "fall")
+            if selected_preset not in {"fall", "clips", "custom"}:
+                raise ValueError("项目模板无效")
+            result = {"source": str(source), "mode": "project", "preset": selected_preset,
+                      "output_root": str(payload.get("output_root", "")).strip()}
+            if isinstance(payload.get("projectConfig"), dict):
+                result["projectConfig"] = payload["projectConfig"]
+            return result
 
         def output_path(key: str, default_name: str) -> Path:
             raw = str(payload.get(key, "")).strip().strip("\"'")
@@ -187,6 +196,14 @@ class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
         if parsed.path == "/api/config":
             self._json(self.server.launcher_app.config())
             return
+        if parsed.path == "/assets/workbench.css":
+            body = Path(__file__).with_name("workbench.css").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/css; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/directories":
             try:
                 value = parse_qs(parsed.query).get("path", [""])[0]
@@ -236,6 +253,7 @@ def run_launcher(
     prepare_project: Callable,
     initial_selection=None,
     auto_close=False,
+    desktop=False,
 ) -> None:
     app = LauncherApp(settings, html_path, save_selection)
     server = LauncherServer((host, port), app, prepare_project, auto_close)
@@ -255,9 +273,24 @@ def run_launcher(
     if initial_selection:
         server.start_selection(initial_selection)
     try:
-        server.serve_forever(poll_interval=0.1)
+        if desktop:
+            from desktop_window import serve_window
+            from reviewer import user_cache_dir
+            serve_window(server, url, user_cache_dir("desktop-browser"))
+        else:
+            server.serve_forever(poll_interval=0.1)
     except KeyboardInterrupt:
         return None
+    except Exception as exc:
+        if not desktop:
+            raise
+        # In particular Windows may lack its system WebView2 runtime. Do not
+        # silently open the obsolete IE renderer or leave a blank application.
+        safe_log(f'独立窗口组件不可用，改用系统浏览器：{exc}')
+        server.runtime.stopped.clear()
+        server.runtime.watch(server)
+        webbrowser.open(url, new=2)
+        server.serve_forever(poll_interval=0.1)
     finally:
         server.runtime.stopped.set()
         if browser_timer:

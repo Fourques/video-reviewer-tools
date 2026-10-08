@@ -1,4 +1,5 @@
 __pycache__/
+.video-reviewer/
 .DS_Store
 .preview_cache/
 .label_preview_cache/
