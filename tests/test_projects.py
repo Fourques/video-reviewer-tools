@@ -15,7 +15,7 @@ from project_store import ConflictError, ProjectStore
 class ProjectTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.source = self.root / "project"
         self.source.mkdir()
         (self.source / "one.mp4").write_bytes(b"video-one")

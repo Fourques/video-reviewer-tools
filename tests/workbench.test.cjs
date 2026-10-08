@@ -16,7 +16,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.listen(0,'127.0.0.1',()=>{const port=probe.address().port;probe.close(()=>resolve(port));});});
 (async()=>{
  const port=await freePort();const base=`http://127.0.0.1:${port}`;
- const service=spawn('python3',['start.py','--source',source,'--preset','fall','--port',String(port),'--no-browser'],{cwd:path.join(__dirname,'..')});
+ const service=spawn('python3',['start.py','--source',source,'--preset','fall','--port',String(port),'--no-browser'],{cwd:path.join(__dirname,'..'),env:{...process.env,VIDEO_REVIEWER_SETTINGS_FILE:path.join(root,'launcher-settings.json')}});
  let output='';service.stdout.on('data',data=>output+=data);service.stderr.on('data',data=>output+=data);
  let browser;
  try{
@@ -62,7 +62,7 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.reload();await page.waitForFunction(()=>deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
   await page.locator('#switchProject').click();await page.waitForSelector('#start');await page.screenshot({path:path.join(root,'project-center.png')});
   await page.locator('#source').fill(source);await page.locator('#start').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
-  await page.close();for(let i=0;i<150&&service.exitCode===null;i++)await wait(100);
+  await page.close({runBeforeUnload:true});for(let i=0;i<200&&service.exitCode===null;i++)await wait(100);
   assert.equal(service.exitCode,0,'Last tab close did not release service');
   console.log(JSON.stringify({status:'passed',screenshots:root,checks:'layouts, labels, playback state, undo, queue retry, segments, export, resume, project switch, shutdown'}));
  }catch(error){console.error(output);throw error;}

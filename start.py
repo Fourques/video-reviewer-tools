@@ -17,7 +17,7 @@ from project_app import ProjectApp, ProjectHandler
 from launcher_server import run_launcher
 
 
-SETTINGS_FILE = Path.home() / ".video_reviewer_launcher.json"
+SETTINGS_FILE = Path(os.environ.get('VIDEO_REVIEWER_SETTINGS_FILE', str(Path.home() / '.video_reviewer_launcher.json')))
 MAX_RECENT_PROJECTS = 10
 
 

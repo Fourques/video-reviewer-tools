@@ -29,6 +29,7 @@ jobs:
             artifact: VideoReviewer-macOS-Intel
             kind: mac
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,6 +56,8 @@ jobs:
           REVIEWER_PLAYWRIGHT="$RUNNER_TEMP/reviewer-browser/node_modules/playwright" node tests/workbench.test.cjs
       - name: Native desktop integration (Linux)
         if: matrix.kind == 'linux'
+        env:
+          QTWEBENGINE_CHROMIUM_FLAGS: --no-sandbox
         run: xvfb-run -a python tests/test_native_integration.py
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec

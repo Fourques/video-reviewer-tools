@@ -15,6 +15,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix='reviewer-native-') as directory:
         root = Path(directory)
+        start.SETTINGS_FILE = root / 'launcher-settings.json'
         video = root / 'one.mp4'
         command = reviewer.run_command(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=8', '-t', '2', '-c:v', 'libx264', str(video)])
         assert command.returncode == 0, command.stderr
@@ -48,6 +49,12 @@ def main():
             finally:
                 if window:
                     window.destroy()
+                else:
+                    from urllib.request import Request, urlopen
+                    try:
+                        urlopen(Request(f'http://127.0.0.1:{port}/api/shutdown', data=b'{}', headers={'Content-Type': 'application/json'}), timeout=3).close()
+                    except Exception:
+                        pass
         for key in ('SSH_CONNECTION', 'VSCODE_IPC_HOOK_CLI'):
             os.environ.pop(key, None)
         with socket.socket() as probe:
