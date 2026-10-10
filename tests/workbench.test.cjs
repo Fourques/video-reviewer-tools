@@ -90,7 +90,11 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.goto(base+'/projects');await page.locator('#skipCsv').waitFor({state:'visible'});assert.equal(await page.locator('#scanStage').textContent(),'匹配 CSV 字段');await page.locator('#skipCsv').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
   await page.unroute('**/api/startup-status');await page.unroute('**/api/startup-skip-metadata');await page.locator('#switchProject').click();await page.waitForSelector('#start');
   await page.screenshot({path:path.join(root,'project-center.png')});
-  await page.locator('#source').fill(source);await page.locator('#start').click();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
+  await page.locator('#source').fill(path.join(root,'does-not-exist'));await page.locator('#start').click();await page.waitForFunction(()=>!document.getElementById('start').disabled);assert.match(await page.locator('#status').textContent(),/不存在/);assert(await page.locator('#scanPanel').isHidden());
+  // Feedback and elapsed time begin on click, not after a slow start response.
+  let releaseStart;const startGate=new Promise(resolve=>releaseStart=resolve);
+  await page.route('**/api/start',async route=>{await startGate;await route.continue();});
+  await page.locator('#source').fill(source);await page.locator('#start').click();await page.locator('#scanPanel').waitFor({state:'visible'});assert(await page.locator('#start').isDisabled());await wait(1150);assert.match(await page.locator('#scanElapsed').textContent(),/已用时 [1-9]/);await page.screenshot({path:path.join(root,'opening-project.png')});releaseStart();await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);await page.unroute('**/api/start');assert.equal(await page.evaluate(()=>state.config.labels.length),4);
   await page.waitForFunction(()=>globalThis.videoReviewerSessionReady?.());
   await wait(200);
   // CDP's closeTarget can terminate the renderer without pagehide/beacon in

@@ -43,7 +43,7 @@ class ProjectApp(LabelApp):
         self.metadata_skip_requested = self.selection.get('_skip_metadata')
         self.metadata_deferred = False
         self.webm_preview = self.selection.get('preview_format') == 'webm'
-        self.store = ProjectStore(self.source / ".video-reviewer")
+        self.store = ProjectStore(self.source / ".video-reviewer", progress=self.report)
         self.lock = self.store.mutex
         self.state = self.store.state
         self.config_path = self.store.directory / "project.json"
@@ -146,8 +146,11 @@ class ProjectApp(LabelApp):
             if directory == Path(directory.anchor) or directory in {Path('/tmp'), Path.home()}:
                 break
             try:
-                with os.scandir(directory) as entries:
-                    candidates = [directory / entry.name for entry in entries if entry.name.lower().endswith('.csv') and not entry.name.startswith('.') and entry.is_file()]
+                if depth == 0 and hasattr(self, '_scan_csv_candidates'):
+                    candidates = list(self._scan_csv_candidates)
+                else:
+                    with os.scandir(io_path(directory)) as entries:
+                        candidates = [directory / entry.name for entry in entries if entry.name.lower().endswith('.csv') and not entry.name.startswith('.') and entry.is_file(follow_symlinks=False)]
             except OSError:
                 continue
             candidates.sort(key=lambda path: (path.name.lower() not in {'index.csv', 'candidates.csv', 'metadata.csv'}, path.name.lower()))
@@ -196,7 +199,13 @@ class ProjectApp(LabelApp):
                 continue
         if sampled:
             self.metadata_warning = 'CSV 自动检测采用限时采样；若未匹配到正确文件，可在设置中手动选择，手选 CSV 不限制行数'
-        return best[2] if best else {}
+        config = best[2] if best else {}
+        if config:
+            try:
+                self._metadata_cache_before = self._metadata_fingerprint(video_keys, config)
+            except OSError:
+                self._metadata_cache_before = None
+        return config
 
     def check_metadata_cancel(self):
         if self.metadata_skip_requested and self.metadata_skip_requested.is_set():
@@ -206,7 +215,10 @@ class ProjectApp(LabelApp):
         self.metadata_deferred = False
         try:
             self.check_metadata_cancel()
+            if self._restore_metadata_cache(video_keys):
+                return
             self._load_project_metadata(video_keys)
+            self._write_metadata_cache(video_keys)
         except MetadataSkipped:
             self.metadata_deferred = True
             self.metadata_csv, self.metadata_rows, self.metadata_columns = None, {}, []
@@ -214,6 +226,63 @@ class ProjectApp(LabelApp):
             self.metadata_conflicts = set()
             self.metadata_warning = '本次跳过 CSV，原配置未清空；可在项目设置中手动载入对照字段'
             self.report('已跳过 CSV', 0, None, '继续载入视频和审核进度')
+
+    def _metadata_cache_path(self):
+        # One replaceable, machine-local cache per project; never a second set
+        # of annotations, never modify a CSV or put large caches on the NAS.
+        identity = hashlib.sha256(str(self.source).encode('utf-8')).hexdigest()
+        return self.cache / f'metadata-{identity}.json'
+
+    def _metadata_fingerprint(self, video_keys, config):
+        if not config.get('path') or config.get('disabled'):
+            return None
+        path = Path(config['path'])
+        stat = io_path(path).stat()
+        return {'version': 1, 'config': config, 'file': [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino],
+                'videos': hashlib.sha256('\0'.join(sorted(video_keys)).encode('utf-8')).hexdigest()}
+
+    def _restore_metadata_cache(self, video_keys):
+        self._metadata_cache_before = None
+        saved = self.state.get('metadataConfig', {})
+        try:
+            fingerprint = self._metadata_fingerprint(video_keys, saved)
+            self._metadata_cache_before = fingerprint
+            if fingerprint is None:
+                return False
+            self.report('恢复 CSV 对照缓存', 0, None, '检查 CSV、字段设置和视频清单是否变化；变化时重新匹配')
+            cached = ProjectStore.read_json(self._metadata_cache_path())
+            if cached.get('fingerprint') != fingerprint:
+                return False
+            columns, rows, conflicts = cached['columns'], cached['rows'], cached['conflicts']
+            if (not isinstance(columns, list) or not all(isinstance(value, str) for value in columns)
+                    or not isinstance(rows, dict) or not all(isinstance(row, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in row.items()) for row in rows.values())
+                    or not isinstance(conflicts, list) or not all(isinstance(value, str) for value in conflicts)):
+                return False
+            if self._metadata_fingerprint(video_keys, saved) != fingerprint:
+                return False  # CSV changed while the local cache was loading.
+            self.check_metadata_cancel()
+            self.metadata_csv = Path(saved['path'])
+            self.metadata_columns, self.metadata_rows = columns, rows
+            self.metadata_conflicts, self.metadata_config = set(conflicts), copy.deepcopy(saved)
+            self.detected_csvs = [self.metadata_csv]
+            self.metadata_warning = str(cached.get('warning', ''))
+            self.report('恢复 CSV 对照缓存', len(rows), len(rows), '已复用本机缓存，无需重复读取整张 CSV')
+            return True
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False  # Optional cache failure must never reset project data.
+
+    def _write_metadata_cache(self, video_keys):
+        if not self.metadata_csv:
+            return
+        try:
+            fingerprint = self._metadata_fingerprint(video_keys, self.metadata_config)
+            # Don't cache a file changed since configured/automatic selection.
+            if fingerprint is None or fingerprint != self._metadata_cache_before:
+                return
+            atomic_json(self._metadata_cache_path(), {'fingerprint': fingerprint, 'columns': self.metadata_columns,
+                        'rows': self.metadata_rows, 'conflicts': sorted(self.metadata_conflicts), 'warning': self.metadata_warning})
+        except (OSError, ValueError):
+            pass
 
     def _load_project_metadata(self, video_keys):
         self.metadata_warning = ''
@@ -256,33 +325,56 @@ class ProjectApp(LabelApp):
             if path not in unique or label:
                 unique[path] = label
         found = []
+        self._scan_csv_candidates = []
         for directory, label in unique.items():
             self.report('检索当前目录', len(found), None, str(directory))
-            if not io_path(directory).is_dir():
+            try:
+                with os.scandir(io_path(directory)) as entries:
+                    for entry in entries:
+                        suffix = Path(entry.name).suffix.lower()
+                        if directory == self.source and suffix == '.csv' and not entry.name.startswith('.') and entry.is_file(follow_symlinks=False):
+                            self._scan_csv_candidates.append(directory / entry.name)
+                        if suffix in VIDEO_EXTENSIONS and entry.is_file(follow_symlinks=False):
+                            stat = entry.stat()
+                            found.append((directory / entry.name, label, stat.st_size, stat.st_mtime_ns))
+                            if len(found) % 100 == 0:
+                                self.report("检索当前目录", len(found), None, directory.name)
+            except OSError:
                 if label is None:
                     self.input_warnings.append(f'输入目录不可访问：{directory}；该目录进度保留，可在设置中重新绑定')
-                continue
-            with os.scandir(io_path(directory)) as entries:
-                for entry in entries:
-                    if Path(entry.name).suffix.lower() in VIDEO_EXTENSIONS and entry.is_file(follow_symlinks=False):
-                        stat = entry.stat()
-                        found.append((directory / entry.name, label, stat.st_size, stat.st_mtime_ns))
-                        if len(found) % 100 == 0:
-                            self.report("检索当前目录", len(found), None, directory.name)
         # Existing project members retain their canonical location when output
         # bindings change. Do not recursively discover anything in those folders.
         self.report('核对已有视频', 0, len(self.state['assets']), '复用目录清单，不重复查询已扫描文件')
         seen_paths = {self._known_location(path) for path, *_ in found}
+        saved_directories = {}
         for index, asset in enumerate(self.state['assets'].values(), 1):
             if index % 1000 == 0:
                 self.report('核对已有视频', index, len(self.state['assets']), asset['name'])
             if asset['path'] in seen_paths:
                 continue
-            path = self.resolve(asset['path'])
-            if io_path(path).is_file():
-                stat = io_path(path).stat()
-                found.append((path, asset.get('originLabel'), stat.st_size, stat.st_mtime_ns))
-                seen_paths.add(asset['path'])
+            # Membership in a completed scandir already establishes absence.
+            # Never turn 12000 missing old paths into 12000 SMB realpath/stat
+            # roundtrips. For old output bindings, enumerate each parent once,
+            # including only saved members (no recursive/new-video discovery).
+            path = Path(asset['path']).expanduser()
+            path = Path(os.path.abspath(path if path.is_absolute() else self.source / path))
+            if path.parent not in unique:
+                saved_directories.setdefault(path.parent, {}).setdefault(path.name, asset)
+        for index, (directory, members) in enumerate(saved_directories.items(), 1):
+            self.report('核对历史目录', index - 1, len(saved_directories), str(directory))
+            try:
+                with os.scandir(io_path(directory)) as entries:
+                    for entry_index, entry in enumerate(entries, 1):
+                        asset = members.get(entry.name)
+                        if asset and entry.is_file(follow_symlinks=False):
+                            stat = entry.stat()
+                            path = directory / entry.name
+                            found.append((path, asset.get('originLabel'), stat.st_size, stat.st_mtime_ns))
+                            seen_paths.add(self._known_location(path))
+                        if entry_index % 1000 == 0:
+                            self.report('核对历史目录', index - 1, len(saved_directories), f'{directory} · 已检查 {entry_index} 个目录项')
+            except OSError:
+                self.input_warnings.append(f'历史目录不可访问：{directory}；原进度保留，文件未计入当前清单')
         # Copy destinations are not separate review items while their canonical
         # source exists. Availability comes from the scan, not N extra stats.
         copied = set()
@@ -939,19 +1031,21 @@ class ProjectApp(LabelApp):
         self._export_progress('整理结束', **{**result, 'failures': failures})
 
     def _recover_operations(self):
-        for key, record in list(self.state["operations"].items()):
-            if record.get("status") != "running":
-                continue
+        interrupted = [(key, record) for key, record in self.state['operations'].items() if record.get('status') == 'running']
+        for index, (key, record) in enumerate(interrupted, 1):
+            self.report('核验中断整理', index - 1, len(interrupted), '正在核对上次中断的文件；完成前不会进入审核')
+            def digest(path):
+                return sha256_file(path, lambda done: self.report('核验中断整理', index - 1, len(interrupted), f'{path.name} · 已核验 {done / 1048576:.1f} MB'))
             destination = self.resolve(record.get('destinationLocation', record['destination']))
             # Rebind receipts inside a relocated project to its new root.
             asset = self.state["assets"].get(record["id"])
             target = io_path(destination)
-            if target.is_file() and record.get("digest") and sha256_file(target) == record["digest"]:
+            if target.is_file() and record.get("digest") and digest(target) == record["digest"]:
                 if record["kind"] == "move" and asset:
                     source = self.resolve(record.get('sourceLocation', record['source']))
                     source_file = io_path(source)
                     if source_file.exists() and not os.path.samefile(source_file, target):
-                        if sha256_file(source_file) != record['digest']:
+                        if digest(source_file) != record['digest']:
                             self._record_operation(key, {**record, 'status': 'error', 'error': '中断后原文件发生变化，请人工确认；未删除'})
                             continue
                         source_file.unlink()

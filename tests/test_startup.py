@@ -70,6 +70,48 @@ class DurationCacheTests(unittest.TestCase):
 
 
 class StartupHttpTests(unittest.TestCase):
+    def test_slow_directory_validation_does_not_block_start_response_or_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            html = source / 'launcher.html'
+            html.write_text('<h1>Scan</h1>')
+            release, entered, saved = threading.Event(), threading.Event(), []
+            app = LauncherApp({}, html, saved.append)
+            original_validate = app.validate_selection
+            def slow_validate(payload):
+                entered.set()
+                release.wait(5)
+                return original_validate(payload)
+            app.validate_selection = slow_validate
+            server = LauncherServer(('127.0.0.1', 0), app, lambda selection, report: (SimpleNamespace(videos=[]), LabelHandler))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            opener = build_opener(ProxyHandler({}))
+            base = f'http://127.0.0.1:{server.server_port}'
+            try:
+                payload = json.dumps({'source': str(source), 'mode': 'project'}).encode()
+                with opener.open(Request(base + '/api/start', data=payload), timeout=2) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertTrue(entered.wait(2))
+                self.assertFalse(release.is_set())
+                with opener.open(base + '/api/startup-status', timeout=2) as response:
+                    status = json.load(response)
+                self.assertEqual(status['stage'], '检查项目目录')
+                self.assertIn('stageSeconds', status)
+                self.assertFalse(saved)
+                release.set()
+                deadline = time.monotonic() + 3
+                while server.runtime.snapshot()['status'] == 'scanning' and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(server.runtime.snapshot()['status'], 'ready')
+                self.assertEqual(saved[0]['source'], str(source.resolve()))
+            finally:
+                release.set()
+                server.runtime.stopped.set()
+                server.shutdown()
+                server.server_close()
+                worker.join(3)
+
     def test_csv_skip_request_reaches_scanning_worker_without_project_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)

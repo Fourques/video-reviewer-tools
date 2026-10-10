@@ -21,7 +21,11 @@ from app_runtime import AppRuntime, LocalHTTPServer, RuntimeHandlerMixin, safe_l
 def _directory_roots() -> list[str]:
     roots: list[Path] = [Path.home()]
     if os.name == "nt":
-        roots.extend(Path(f"{letter}:\\") for letter in string.ascii_uppercase if Path(f"{letter}:\\").is_dir())
+        # Listing available drive letters must not contact every mapped network
+        # drive (a disconnected one can block the entire project center).
+        import ctypes
+        drives = ctypes.windll.kernel32.GetLogicalDrives()
+        roots.extend(Path(f"{letter}:\\") for index, letter in enumerate(string.ascii_uppercase) if drives & (1 << index))
     else:
         roots.append(Path("/"))
         volumes = Path("/Volumes")
@@ -33,7 +37,7 @@ def _directory_roots() -> list[str]:
     unique: list[str] = []
     for item in roots:
         try:
-            value = str(item.resolve())
+            value = str(item.absolute())
         except OSError:
             continue
         if value not in unique:
@@ -136,7 +140,7 @@ class LauncherServer(LocalHTTPServer):
         self.runtime = AppRuntime(auto_close)
         self.start_lock = threading.Lock()
 
-    def start_selection(self, selection):
+    def start_selection(self, selection, validate=False):
         if not self.start_lock.acquire(blocking=False):
             raise ValueError("正在检索视频，请等待当前扫描完成")
         self.runtime.report("准备项目", 0, None, selection["source"])
@@ -144,7 +148,13 @@ class LauncherServer(LocalHTTPServer):
 
         def prepare():
             try:
-                app, handler = self.prepare_project({**selection, '_skip_metadata': self.runtime.skip_metadata_requested}, self.runtime.report)
+                chosen = selection
+                if validate:
+                    self.runtime.report('检查项目目录', 0, None, '检查目录与访问权限；网络盘响应慢时可取消并退出')
+                    chosen = self.launcher_app.validate_selection(selection)
+                    self.launcher_app.save_selection(chosen)
+                    self.launcher_app.selection = chosen
+                app, handler = self.prepare_project({**chosen, '_skip_metadata': self.runtime.skip_metadata_requested}, self.runtime.report)
                 if self.runtime.stopped.is_set():
                     close = getattr(app, "close", None)
                     if close:
@@ -228,10 +238,11 @@ class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length) or b"{}")
-            selection = self.server.launcher_app.validate_selection(payload)
-            self.server.launcher_app.save_selection(selection)
-            self.server.launcher_app.selection = selection
-            self.server.start_selection(selection)
+            if not isinstance(payload, dict) or not isinstance(payload.get('source'), str) or not payload['source'].strip():
+                raise ValueError('请选择项目目录')
+            # Accept immediately; all realpath/is_dir/network work belongs to
+            # the worker so the UI/status/cancel endpoints stay responsive.
+            self.server.start_selection(payload, validate=True)
             self._json({"ok": True, "message": "正在扫描视频，审核页面准备好后会自动进入。"})
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

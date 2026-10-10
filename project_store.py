@@ -21,10 +21,13 @@ class ConflictError(ValueError):
 
 
 def atomic_json(path: Path, value) -> None:
+    # Encode in memory, then perform a buffered sequential write. json.dump's
+    # per-token writes/encoding are costly for large project snapshots on SMB.
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode('utf-8')
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            json.dump(value, handle, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        with temporary.open("xb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         temporary.replace(path)
@@ -33,7 +36,8 @@ def atomic_json(path: Path, value) -> None:
 
 
 class ProjectStore:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, progress=None):
+        self.report = progress or (lambda *args: None)
         self.directory = directory
         directory.mkdir(parents=True, exist_ok=True)
         self.mutex = threading.RLock()
@@ -60,7 +64,7 @@ class ProjectStore:
         try:
             self.state = {"version": 2, "seq": 0, "assets": {}, "annotations": {}, "history": [], "operations": {}, "cursor": None, "views": [], "round": 1}
             if self.path.exists():
-                self.state = self.read_json(self.path)
+                self.state = self.read_json(self.path, self.report)
             if not isinstance(self.state, dict) or self.state.get("version") != 2:
                 raise ValueError("进度格式不支持，请使用匹配版本；现有文件未修改")
             for key, kind in (("assets", dict), ("annotations", dict), ("history", list), ("operations", dict), ("views", list)):
@@ -73,9 +77,20 @@ class ProjectStore:
             raise
 
     @staticmethod
-    def read_json(path: Path):
+    def read_json(path: Path, progress=None):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            if not progress:
+                return json.loads(path.read_bytes())
+            with path.open('rb') as handle:
+                total = os.fstat(handle.fileno()).st_size
+                progress('读取项目快照', 0, total, '正在读取已保存进度（字节）；不会读取视频内容')
+                chunks, done = [], 0
+                while chunk := handle.read(1024 * 1024):
+                    chunks.append(chunk)
+                    done += len(chunk)
+                    progress('读取项目快照', done, total, '顺序读取已保存进度（字节）')
+            progress('解析项目进度', 0, None, f'解析 {done / 1024 / 1024:.1f} MB 进度快照')
+            return json.loads(b''.join(chunks))
         except (OSError, ValueError) as exc:
             raise ValueError(f"无法读取项目数据：{path.name}。未清空进度，请检查网络盘或恢复此文件。") from exc
 
@@ -84,7 +99,9 @@ class ProjectStore:
             return
         valid_end = 0
         with self.journal.open("rb") as handle:
-            for raw in handle:
+            total = os.fstat(handle.fileno()).st_size
+            self.report('恢复操作日志', 0, total, '恢复已确认的标签和整理记录（字节）')
+            for index, raw in enumerate(handle, 1):
                 # Only a non-newline-terminated last write may be incomplete.
                 if not raw.endswith(b"\n"):
                     self.warning = "上次退出留下未确认的半条记录，已恢复所有确认保存的标注。"
@@ -99,6 +116,9 @@ class ProjectStore:
                 except (ValueError, KeyError, TypeError) as exc:
                     raise ValueError("项目操作日志损坏；未覆盖旧进度，请保留隐藏项目目录进行恢复。") from exc
                 valid_end = handle.tell()
+                if index % 100 == 0:
+                    self.report('恢复操作日志', valid_end, total, f'已检查 {index} 条日志，原标签保留')
+            self.report('恢复操作日志', valid_end, total, '已恢复确认保存的记录（字节）')
         if self.warning:
             with self.journal.open("r+b") as handle:
                 handle.truncate(valid_end)

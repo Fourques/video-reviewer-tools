@@ -47,6 +47,8 @@ class AppRuntime:
         self.skip_metadata_requested = threading.Event()
         self.scan_started = time.monotonic()
         self.scan_updated = self.scan_started
+        self.stage_started = self.scan_started
+        self.scan_timings = []
         self.sessions = set()
         self.closed_pages = set()
         self.last_empty = time.monotonic()
@@ -60,15 +62,21 @@ class AppRuntime:
                 raise RuntimeError("工具正在退出")
             if self.progress["status"] == "ready":
                 return  # The initial progress page stays ready during later rescans.
+            now = time.monotonic()
             if self.progress['status'] != 'scanning':
-                self.scan_started = time.monotonic()
-            self.scan_updated = time.monotonic()
+                self.scan_started = self.stage_started = now
+                self.scan_timings = []
+            elif self.progress['stage'] != stage:
+                self.scan_timings.append({'stage': self.progress['stage'], 'seconds': round(now - self.stage_started, 2)})
+                self.scan_timings = self.scan_timings[-30:]
+                self.stage_started = now
+            self.scan_updated = now
             self.progress = {"status": "scanning", "stage": stage, "done": done, "total": total, "message": message}
 
     def snapshot(self):
         with self.lock:
             now = time.monotonic()
-            return {**self.progress, 'elapsedSeconds': int(now - self.scan_started), 'idleSeconds': int(now - self.scan_updated), 'canSkipMetadata': self.progress['status'] == 'scanning' and self.progress['stage'] in {'寻找 CSV 对照', '匹配 CSV 字段', '读取原始标签'} and not self.skip_metadata_requested.is_set(), 'metadataSkipRequested': self.skip_metadata_requested.is_set()}
+            return {**self.progress, 'elapsedSeconds': int(now - self.scan_started), 'stageSeconds': int(now - self.stage_started), 'stages': list(self.scan_timings), 'idleSeconds': int(now - self.scan_updated), 'canSkipMetadata': self.progress['status'] == 'scanning' and self.progress['stage'] in {'寻找 CSV 对照', '匹配 CSV 字段', '读取原始标签', '恢复 CSV 对照缓存'} and not self.skip_metadata_requested.is_set(), 'metadataSkipRequested': self.skip_metadata_requested.is_set()}
 
     def enter(self, page):
         with self.lock:

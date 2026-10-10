@@ -286,10 +286,10 @@ class LabelApp:
         label_columns = [str(item) for item in config.get("labelColumns", []) if str(item)]
         if file_column not in columns:
             file_column = guessed["fileColumn"]
-        if device_column not in columns:
+        if device_column not in columns and (device_column or 'deviceColumn' not in config):
             device_column = guessed["deviceColumn"]
         label_columns = [item for item in label_columns if item in columns and item not in {file_column, device_column}]
-        if not label_columns:
+        if not label_columns and 'labelColumns' not in config:
             label_columns = guessed["labelColumns"]
         label_columns = list(dict.fromkeys(label_columns))[:3]
         if not file_column:

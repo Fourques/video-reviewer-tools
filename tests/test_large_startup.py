@@ -12,6 +12,7 @@ from unittest.mock import patch
 from app_runtime import AppRuntime
 from file_paths import io_path
 from project_app import ProjectApp
+from project_store import ProjectStore
 
 
 class LargeStartupTests(unittest.TestCase):
@@ -125,6 +126,122 @@ class LargeStartupTests(unittest.TestCase):
         self.assertGreaterEqual(status['idleSeconds'], 25)
         runtime.skip_metadata_requested.set()
         self.assertFalse(runtime.snapshot()['canSkipMetadata'])
+
+    def test_12000_missing_members_are_not_probed_individually(self):
+        app = self.app()
+        app.store.commit(merge={'assets': {str(index): {'name': f'missing-{index}.mp4', 'path': f'missing-{index}.mp4', 'size': 5, 'modified': 1}
+                                          for index in range(12000)}})
+        original_resolve, original_stat = Path.resolve, Path.stat
+        def resolve(path, *args, **kwargs):
+            self.assertNotEqual(path.suffix, '.mp4', 'Missing member triggered network realpath')
+            return original_resolve(path, *args, **kwargs)
+        def stat(path, *args, **kwargs):
+            self.assertNotEqual(path.suffix, '.mp4', 'Missing member triggered network stat')
+            return original_stat(path, *args, **kwargs)
+        with patch.object(Path, 'resolve', resolve), patch.object(Path, 'stat', stat):
+            app.scan()
+        self.assertEqual(len(app.state['assets']), 12000)
+        self.assertEqual(app.videos, [])
+
+    def test_csv_discovery_reuses_current_directory_listing(self):
+        (self.source / 'one.mp4').write_bytes(b'video')
+        (self.source / 'index.csv').write_text('file,device_id,label\none.mp4,A,fall\n', encoding='utf-8')
+        with patch('project_app.os.scandir', wraps=os.scandir) as scan:
+            app = self.app()
+        self.assertEqual(sum(Path(call.args[0]) == io_path(self.source) for call in scan.call_args_list), 1)
+        self.assertEqual(app.videos[0].metadata_device_id, 'A')
+
+    def test_old_output_directory_scanned_once_without_discovering_other_files(self):
+        old = self.root / 'old-output'
+        old.mkdir()
+        (old / 'known.mp4').write_bytes(b'video')
+        (old / 'unrelated.mp4').write_bytes(b'video')
+        app = self.app()
+        stat = (old / 'known.mp4').stat()
+        assets = {'known': {'name': 'known.mp4', 'path': str(old / 'known.mp4'), 'size': 5, 'modified': stat.st_mtime_ns}}
+        assets.update({f'missing-{index}': {'name': f'missing-{index}.mp4', 'path': str(old / f'missing-{index}.mp4'), 'size': 5, 'modified': 1} for index in range(12000)})
+        app.store.commit(merge={'assets': assets})
+        with patch('project_app.os.scandir', wraps=os.scandir) as scan:
+            app.scan()
+        self.assertEqual(sum(call.args[0] == io_path(old) for call in scan.call_args_list), 1)
+        self.assertEqual([video.id for video in app.videos], ['known'])
+
+    def test_csv_cache_reopen_without_csv_reads_preserves_labels_and_conflicts(self):
+        (self.source / 'one.mp4').write_bytes(b'video')
+        (self.source / 'two.mp4').write_bytes(b'video')
+        csv_path = self.source / 'index.csv'
+        csv_path.write_text('file,device_id,label\none.mp4,A,fall\none.mp4,B,no_fall\ntwo.mp4,C,fall\n', encoding='utf-8')
+        app = self.app()
+        identity = app.videos[0].id
+        app.save_annotation({'id': identity, 'revision': 0, 'annotation': {**app.empty_annotation(), 'label': 'fall', 'status': 'done'}})
+        expected = dict(app.metadata_rows)
+        self.assertTrue(app._metadata_cache_path().is_file())
+        app.close()
+        original_open = Path.open
+        def forbid_csv(path, *args, **kwargs):
+            self.assertNotEqual(path.suffix, '.csv', 'Reopen reread unchanged CSV')
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', forbid_csv):
+            reopened = self.app()
+        self.assertEqual(reopened.metadata_rows, expected)
+        self.assertEqual(reopened.metadata_conflicts, {'one', 'one.mp4'})
+        self.assertEqual(reopened.annotation(identity)['label'], 'fall')
+
+    def test_csv_cache_invalidates_on_edit_membership_mapping_and_corruption(self):
+        (self.source / 'one.mp4').write_bytes(b'video')
+        csv_path = self.source / 'index.csv'
+        csv_path.write_text('file,device_id,label\none.mp4,A,fall\ntwo.mp4,B,no_fall\n', encoding='utf-8')
+        app = self.app()
+        cache = app._metadata_cache_path()
+        self.assertEqual(app.videos[0].metadata_device_id, 'A')
+        csv_path.write_text('file,device_id,label\none.mp4,CHANGED,fall\ntwo.mp4,B,no_fall\n', encoding='utf-8')
+        app.scan()
+        self.assertEqual(app.videos[0].metadata_device_id, 'CHANGED')
+        (self.source / 'two.mp4').write_bytes(b'video')
+        app.scan()
+        self.assertEqual(app.videos[1].metadata_device_id, 'B')
+        app.configure_metadata({'path': str(csv_path), 'fileColumn': 'file', 'deviceColumn': '', 'labelColumns': []})
+        self.assertEqual(app.videos[0].metadata_device_id, '')
+        self.assertEqual(app.videos[0].metadata_labels, ())
+        cache.write_text('{bad-cache', encoding='utf-8')
+        app.scan()
+        self.assertEqual(len(app.metadata_rows), 4)
+        self.assertEqual(app.metadata_config['labelColumns'], [])
+
+    def test_cache_write_failure_is_optional_and_skip_precedes_cache(self):
+        (self.source / 'one.mp4').write_bytes(b'video')
+        csv_path = self.source / 'index.csv'
+        csv_path.write_text('file,device_id,label\none.mp4,A,fall\n', encoding='utf-8')
+        app = self.app()
+        with patch('project_app.atomic_json', side_effect=PermissionError('cache unwritable')):
+            app._write_metadata_cache({'one', 'one.mp4'})
+        app.close()
+        skip = threading.Event()
+        skip.set()
+        reopened = self.app(_skip_metadata=skip)
+        self.assertTrue(reopened.metadata_deferred)
+        self.assertFalse(reopened.metadata_rows)
+
+    def test_snapshot_and_journal_recovery_report_actual_byte_progress(self):
+        progress = []
+        directory = self.root / 'store'
+        store = ProjectStore(directory)
+        store.commit({'notes': '测' * 500000})
+        store.checkpoint()
+        for index in range(101):
+            store.commit({'cursor': str(index)})
+        # Simulate a crash without creating a fresh snapshot on close.
+        store.handle.close()
+        store.closed = True
+        reopened = ProjectStore(directory, lambda *values: progress.append(values))
+        try:
+            self.assertEqual(reopened.state['cursor'], '100')
+            snapshot = [p for p in progress if p[0] == '读取项目快照']
+            self.assertGreaterEqual(len(snapshot), 3)
+            self.assertEqual(snapshot[-1][1], snapshot[-1][2])
+            self.assertIn('恢复操作日志', {p[0] for p in progress})
+        finally:
+            reopened.close()
 
 
 if __name__ == '__main__':
