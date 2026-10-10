@@ -214,6 +214,7 @@ class ProjectApp(LabelApp):
     def _load_metadata(self, video_keys):
         self.metadata_deferred = False
         try:
+            self.report('寻找 CSV 对照', 0, None, '检查已保存映射和本机缓存，可本次跳过')
             self.check_metadata_cancel()
             if self._restore_metadata_cache(video_keys):
                 return

@@ -167,11 +167,11 @@ class StartupHttpTests(unittest.TestCase):
                 with opener.open(base + "/api/startup-status", timeout=2) as response:
                     return json.load(response)
 
-            def wait_status(expected):
+            def wait_status(expected, stage=None):
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
                     value = get_status()
-                    if value["status"] == expected:
+                    if value["status"] == expected and (stage is None or value['stage'] == stage):
                         return value
                     time.sleep(0.01)
                 self.fail(f"Never reached {expected}")
@@ -180,7 +180,9 @@ class StartupHttpTests(unittest.TestCase):
                 payload = json.dumps({"source": str(source), "mode": "label"}).encode()
                 with opener.open(Request(base + "/api/start", data=payload, headers={"Content-Type": "application/json"})) as response:
                     self.assertEqual(response.status, 200)
-                status = wait_status("scanning")
+                # Directory validation is deliberately asynchronous now. A
+                # scanning status alone doesn't mean the video worker entered.
+                status = wait_status("scanning", "读取视频时长")
                 self.assertEqual((status["done"], status["total"]), (1, 2))
                 with opener.open(base) as response:
                     self.assertIn(b"Project scan", response.read())
