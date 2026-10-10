@@ -379,6 +379,7 @@ function renderExportJob(job) {
   $('downloadExportErrors').hidden=!job.failureCount;$('startExport').disabled=job.status==='running';$('startExport').textContent=job.status==='running'?'整理中…':'重新检查 / 继续';
 }
 async function showExport() {
+  clearTimeout(cursorTimer); // Navigation position is not part of the confirmed file plan.
   const view=++exportView;clearTimeout(exportTimer);$('exportHistoryDialog').close();if(!$('exportDialog').open)$('exportDialog').showModal();
   state.exportPlan=null;$('startExport').disabled=true;$('startExport').textContent='准备中…';$('exportCounts').textContent='';$('exportErrors').textContent='';$('downloadExportErrors').hidden=true;$('exportProgress').removeAttribute('value');$('exportMessage').textContent='正在准备计划，等待未保存标签确认…';$('exportPhase').textContent='此窗口可关闭；关闭窗口不会中断已经开始的整理。';
   $('exportDescription').textContent=(state.config.exportMode==='move'?'确认后移动已完成整段视频；区间导出不删除原视频。':'确认后复制整段视频 / 截取区间；原视频保留。')+` 输出：${state.config.output}（单独绑定目录以项目设置为准）`;

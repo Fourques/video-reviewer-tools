@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app_runtime import AppRuntime
+from file_paths import io_path
 from project_app import ProjectApp
 
 
@@ -52,7 +53,7 @@ class LargeStartupTests(unittest.TestCase):
                 pass
         original_scan, original_resolve, original_exists = os.scandir, Path.resolve, Path.exists
         def scan(directory):
-            return Entries() if Path(directory) == self.source else original_scan(directory)
+            return Entries() if Path(directory) == io_path(self.source) else original_scan(directory)
         def resolve(path, *args, **kwargs):
             self.assertNotEqual(path.suffix, '.mp4', 'Network realpath performed per video')
             return original_resolve(path, *args, **kwargs)
