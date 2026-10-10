@@ -14,7 +14,7 @@ $('start').onclick=async()=>{if(!$('source').value.trim()){$('status').textConte
 let lastScanStatus=null,lastScanReceived=0,scanCancelled=false,scanClock=null;
 $('scanPanel').insertAdjacentHTML('beforeend','<p id="scanHint" role="status"></p><div class="row"><button id="skipCsv" hidden>本次跳过 CSV，先审核视频</button><button id="copyScan">复制诊断信息</button><button id="cancelScan">取消并退出</button></div>');
 $('skipCsv').onclick=async()=>{try{$('skipCsv').disabled=true;await api('/api/startup-skip-metadata',{},8000);$('scanHint').textContent='已请求跳过 CSV；正在结束当前读取，原配置保留。';}catch(error){$('skipCsv').disabled=false;$('scanHint').textContent=error.message;}};
-$('copyScan').onclick=async()=>{const text=JSON.stringify({version:'2.0.9',source:$('source').value,clientTime:new Date().toISOString(),...lastScanStatus},null,2);try{await navigator.clipboard.writeText(text);$('scanHint').textContent='诊断信息已复制，可发给维护人员。';}catch{prompt('复制以下诊断信息',text);}};
+$('copyScan').onclick=async()=>{const text=JSON.stringify({version:'2.0.10',source:$('source').value,clientTime:new Date().toISOString(),...lastScanStatus},null,2);try{await navigator.clipboard.writeText(text);$('scanHint').textContent='诊断信息已复制，可发给维护人员。';}catch{prompt('复制以下诊断信息',text);}};
 $('cancelScan').onclick=()=>$('quit').click();
 function stopScan(){clearInterval(scanClock);scanClock=null;}
 function beginScan(){

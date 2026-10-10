@@ -22,11 +22,14 @@ class CappedPlayer extends Player {
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // A real element plays itself at its native rate; the correction is what has to make
 // up the difference, so the fake has to move too or the numbers mean nothing.
-function playsItself(player,rate){
+function playsItself(player){
   let last=Date.now();
   const timer=setInterval(()=>{
     const now=Date.now();const elapsed=(now-last)/1000;last=now;
-    if(!player.paused&&!player.seeking)player.currentTime+=rate*elapsed;
+    // Follow the accepted native rate, including later speed changes. A fixed
+    // 16x fake kept playing at 16x after selecting 12x and made Windows timer
+    // quantization look like a stale production correction (17.02x).
+    if(!player.paused&&!player.seeking)player.currentTime+=(Number(player.playbackRate)||1)*elapsed;
   },20);
   return ()=>clearInterval(timer);
 }
@@ -54,12 +57,12 @@ test('preferences survive a new controller and invalid rates are ignored',()=>{
   assert.deepEqual(next.settings,{rate:1.25,loop:false,autoplay:false,muted:false});
   next.reset();assert.deepEqual(next.settings,{rate:1.5,loop:true,autoplay:true,muted:true});
 });
-// The fake players below play at the browser ceiling; whatever the clip covers beyond
+// The fake players below follow their accepted native rate; whatever they cover beyond
 // that is the correction's doing, which is what these tests are about.
 test('rates above the browser ceiling really cover that many seconds per second',async()=>{
   const player=new CappedPlayer();
   player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
-  const stop=playsItself(player,16);
+  const stop=playsItself(player);
   try{
     assert.equal(maxPlaybackRate(player),16);
     assert.deepEqual(applyEffectiveRate(player,20),{native:16,extra:4});
@@ -81,7 +84,7 @@ test('rates above the browser ceiling really cover that many seconds per second'
 test('a rate the browser can play needs no skipping',async()=>{
   const player=new CappedPlayer();
   player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
-  const stop=playsItself(player,8);
+  const stop=playsItself(player);
   try{
     assert.deepEqual(applyEffectiveRate(player,16),{native:16,extra:0});
     assert.deepEqual(applyEffectiveRate(player,8),{native:8,extra:0});
@@ -95,7 +98,7 @@ test('a rate the browser can play needs no skipping',async()=>{
 test('re-applying the same speed keeps the correction in place',async()=>{
   const player=new CappedPlayer();
   player.duration=600;player.currentTime=0;player.readyState=3;player.paused=false;
-  const stop=playsItself(player,16);
+  const stop=playsItself(player);
   try{
     // canplay fires again and again while a clip plays, and each one re-applies the
     // speed: starting the correction over there drops every second already made up,
@@ -111,13 +114,13 @@ test('re-applying the same speed keeps the correction in place',async()=>{
     const switched=Date.now();
     await sleep(500);
     const left=player.currentTime/((Date.now()-switched)/1000);
-    assert.ok(left<=17,`12x must not keep the 20x pull in place, got ${left.toFixed(2)}x`);
+    assert.ok(Math.abs(left-12)<=1.25,`12x must not keep the 20x pull in place, got ${left.toFixed(2)}x`);
   }finally{stop();stopEffectiveRate(player);}
 });
 test('a seek at a browser-capped speed is not pulled back by the correction',async()=>{
   const player=new CappedPlayer();
   player.duration=600;player.currentTime=0;player.readyState=0;player.paused=true;
-  const stop=playsItself(player,16);
+  const stop=playsItself(player);
   const controller=new ReviewPlayback(player,{storage:{getItem:()=>null,setItem:()=>{}}});
   try{
     controller.set('rate',20);controller.load('first');player.metadata();player.ready();await Promise.resolve();
