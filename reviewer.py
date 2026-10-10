@@ -178,10 +178,15 @@ def safe_json_write(path: Path, data: Any) -> None:
     temporary.replace(path)
 
 
-def copy_file_bytes(source: Path, destination: Path) -> None:
+def copy_file_bytes(source: Path, destination: Path, progress=None) -> None:
     """Copy only file contents using basic reads/writes for network-drive compatibility."""
     with source.open("rb") as source_handle, destination.open("xb") as destination_handle:
-        shutil.copyfileobj(source_handle, destination_handle, length=4 * 1024 * 1024)
+        copied = 0
+        while chunk := source_handle.read(4 * 1024 * 1024):
+            destination_handle.write(chunk)
+            copied += len(chunk)
+            if progress:
+                progress(copied)
 
 
 @dataclass(frozen=True)

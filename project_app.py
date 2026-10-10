@@ -23,6 +23,7 @@ from quick_labeler import AUTO_CSV_EXCLUDES, LabelApp, LabelHandler, Video, sha2
 from reviewer import VIDEO_EXTENSIONS, copy_file_bytes, ffprobe_duration, ffprobe_keyframes, nearest_keyframe_at_or_before, run_command, user_cache_dir
 from project_schema import VERSION, preset, validate
 from project_store import ConflictError, ProjectStore, atomic_json
+from file_paths import io_path
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -53,6 +54,8 @@ class ProjectApp(LabelApp):
         self.proxy_jobs, self.info_cache = {}, {}
         self.proxy_all_job = {"status": "idle", "done": 0, "total": 0}
         self.export_job = {"status": "idle", "done": 0, "total": 0, "failures": []}
+        self.export_progress_lock = threading.Lock()
+        self.export_plan_cache = None
         self.metadata_csv = None
         self.metadata_config, self.metadata_rows = {}, {}
         self.metadata_columns, self.detected_csvs = [], []
@@ -236,6 +239,8 @@ class ProjectApp(LabelApp):
 
     def scan(self):
         with self.lock:
+            if self.export_job['status'] == 'running':
+                raise ValueError('整理中请勿刷新目录，完成后可继续审核')
             self._scan()
 
     def _scan(self):
@@ -253,11 +258,11 @@ class ProjectApp(LabelApp):
         found = []
         for directory, label in unique.items():
             self.report('检索当前目录', len(found), None, str(directory))
-            if not directory.is_dir():
+            if not io_path(directory).is_dir():
                 if label is None:
                     self.input_warnings.append(f'输入目录不可访问：{directory}；该目录进度保留，可在设置中重新绑定')
                 continue
-            with os.scandir(directory) as entries:
+            with os.scandir(io_path(directory)) as entries:
                 for entry in entries:
                     if Path(entry.name).suffix.lower() in VIDEO_EXTENSIONS and entry.is_file(follow_symlinks=False):
                         stat = entry.stat()
@@ -274,8 +279,8 @@ class ProjectApp(LabelApp):
             if asset['path'] in seen_paths:
                 continue
             path = self.resolve(asset['path'])
-            if path.is_file():
-                stat = path.stat()
+            if io_path(path).is_file():
+                stat = io_path(path).stat()
                 found.append((path, asset.get('originLabel'), stat.st_size, stat.st_mtime_ns))
                 seen_paths.add(asset['path'])
         # Copy destinations are not separate review items while their canonical
@@ -430,6 +435,8 @@ class ProjectApp(LabelApp):
             token = str(payload.get("token", ""))[:100]
             if token and current.get("token") == token:
                 return current
+            if self.export_job['status'] == 'running':
+                raise ValueError('整理中暂不能修改标注，请等待本批完成；未保存记录会保留')
             if int(payload.get("revision", -1)) != current["revision"]:
                 raise ConflictError("这条视频已被其他页面修改，请重新载入后再提交")
             value = {**self.empty_annotation(), **copy.deepcopy(payload["annotation"])}
@@ -473,6 +480,8 @@ class ProjectApp(LabelApp):
 
     def undo(self):
         with self.lock:
+            if self.export_job['status'] == 'running':
+                raise ValueError('整理中暂不能撤销标注，请等待本批完成')
             if not self.state["history"]:
                 raise ValueError("没有可撤销的标注")
             history = list(self.state["history"])
@@ -516,15 +525,16 @@ class ProjectApp(LabelApp):
 
     def video_info(self, identity):
         video = self.get_video(identity)
-        stat = video.path.stat()
+        path = io_path(video.path)
+        stat = path.stat()
         fingerprint = (stat.st_size, stat.st_mtime_ns)
         cached = self.info_cache.get(identity)
         if cached and cached.get("fingerprint") == fingerprint:
             return cached
-        duration = ffprobe_duration(video.path)
+        duration = ffprobe_duration(path)
         value = {"duration": duration, "fingerprint": fingerprint, "keyframes": []}
         if self.config["intervals"] and self.config["snapKeyframes"]:
-            value["keyframes"] = ffprobe_keyframes(video.path)
+            value["keyframes"] = ffprobe_keyframes(path)
         self.info_cache[identity] = value
         return value
 
@@ -602,50 +612,71 @@ class ProjectApp(LabelApp):
 
     def export_plan(self):
         with self.lock:
+            cache_key = (self.state['seq'], json.dumps(self.config, sort_keys=True), id(self.videos))
+            if self.export_plan_cache and self.export_plan_cache[0] == cache_key:
+                return self.export_plan_cache[1]
             if self.config["exportMode"] == "labels":
-                return {"items": [], "counts": {}, "conflicts": [], "message": "此项目仅保存标注；需要视频文件时请在项目设置选择复制或移动"}
+                return {"items": [], 'checks': [], "counts": {}, "conflicts": [], 'seq': self.state['seq'], "message": "此项目仅保存标注；需要视频文件时请在项目设置选择复制或移动"}
+            # Directory bindings are normalized without querying the filesystem.
+            # The worker validates actual files after the user confirms.
+            def bound_path(value):
+                path = Path(value).expanduser()
+                return Path(os.path.abspath(path if path.is_absolute() else self.source / path))
+            output = bound_path(self.config['output'])
+            label_folders = {item['id']: item['folder'] for item in self.config['labels']}
+            label_paths = {label: bound_path(self.config['destinations'][label]) if self.config['destinations'].get(label) else output / folder for label, folder in label_folders.items()}
+            clip_root = bound_path(self.config['clipOutput'])
             items, counts, conflicts, destinations = [], {}, [], {}
-            for video in self.videos:
+            candidates = [*self.videos, *(self._export_video(identity) for identity in self.state['assets'] if identity not in self.video_by_id)]
+            for video in candidates:
                 annotation = self.annotation(video.id)
                 if annotation["status"] != "done":
                     continue
                 segments = annotation["segments"]
                 for index, segment in enumerate(segments, 1):
                     name = video.name if len(segments) == 1 else f"{video.path.stem}_{index:04d}{video.path.suffix}"
-                    directory = self.resolve(self.config["clipOutput"])
+                    directory = clip_root
                     if not self.config["clipFlat"]:
-                        directory /= next(item["folder"] for item in self.config["labels"] if item["id"] == segment["label"])
+                        directory /= label_folders[segment['label']]
                     items.append({"id": video.id, "kind": "clip", "label": segment["label"], "segment": segment, "destination": str(directory / name)})
                 label = annotation["label"]
                 if label and not segments and (not self.config["wholeLabels"] or label in self.config["wholeLabels"]):
-                    destination = self.destination(label) / video.name
-                    if video.path.resolve() != destination.resolve():
+                    destination = label_paths[label] / video.name
+                    if video.path != destination or video.id not in self.video_by_id:
                         items.append({"id": video.id, "kind": self.config["exportMode"], "label": label, "destination": str(destination)})
-            pending = []
+            pending, checks = [], []
             for item in items:
-                video = self.get_video(item["id"])
+                video = self._export_video(item["id"])
                 item["source"] = str(video.path)
                 item["size"] = video.size
-                item['destinationLocation'] = self.location(Path(item['destination']))
-                item['sourceLocation'] = self.location(video.path)
-                signature = json.dumps([item["id"], item["kind"], item["destinationLocation"], item.get("segment"), video.size, video.path.stat().st_mtime_ns], sort_keys=True)
+                item['destinationLocation'] = self._known_location(Path(item['destination']))
+                item['sourceLocation'] = self._known_location(video.path)
+                item['annotationRevision'] = self.annotation(video.id)['revision']
+                signature = json.dumps([item["id"], item["kind"], item["destinationLocation"], item.get("segment"), video.size, self.state['assets'][video.id]['modified']], sort_keys=True)
                 item["key"] = hashlib.sha256(signature.encode()).hexdigest()
-                key = str(Path(item["destination"]).resolve()).casefold()
+                key = str(Path(item["destination"])).casefold()
                 if key in destinations:
                     conflicts.append(f"多个成品同名：{Path(item['destination']).name}")
                 destinations[key] = item["key"]
                 receipt = self.state["operations"].get(item["key"])
-                if receipt and receipt.get("status") == "done" and Path(item["destination"]).is_file():
-                    stat = Path(item['destination']).stat()
-                    unchanged = stat.st_size == receipt.get('outputSize') and stat.st_mtime_ns == receipt.get('outputModified')
-                    if unchanged or (receipt.get('digest') and sha256_file(Path(item['destination'])) == receipt['digest']):
-                        continue
-                    conflicts.append(f"已整理成品被修改，未覆盖：{Path(item['destination']).name}")
-                if Path(item["destination"]).exists() and item["kind"] == "clip":
-                    conflicts.append(f"已有片段，未覆盖：{Path(item['destination']).name}")
+                if receipt and receipt.get('status') == 'done':
+                    checks.append(item)
+                    continue
                 pending.append(item)
                 counts[item["label"]] = counts.get(item["label"], 0) + 1
-            return {"items": pending, "counts": counts, "conflicts": conflicts, "message": f"准备处理 {len(pending)} 项；未审核和待复核不整理"}
+            plan = {"items": pending, 'checks': checks, "counts": counts, "conflicts": conflicts, 'seq': self.state['seq'], "message": f"待整理 {len(pending)} 项，已完成待核验 {len(checks)} 项；预览不读盘，确认后逐项检查实际文件，失败不覆盖。未审核和待复核不整理"}
+            self.export_plan_cache = (cache_key, plan)
+            return plan
+
+    def _export_video(self, identity):
+        if identity in self.video_by_id:
+            return self.video_by_id[identity]
+        asset = self.state['assets'][identity]
+        path = Path(asset['path']).expanduser()
+        path = path if path.is_absolute() else self.source / path
+        # Missing saved members are explicit failures, never silently excluded
+        # from an otherwise 'all done' plan after a disconnected disk/restart.
+        return Video(identity, path, asset['path'], asset['name'], asset['size'], 0, asset.get('originLabel'), '', False, ())
 
     def start_export(self, sequence=None):
         with self.lock:
@@ -656,21 +687,89 @@ class ProjectApp(LabelApp):
             plan = self.export_plan()
             if plan["conflicts"]:
                 raise ValueError("\n".join(plan["conflicts"][:20]))
-            self.export_job = {"status": "running", "done": 0, "total": len(plan["items"]), "failures": [], "message": plan["message"]}
-            threading.Thread(target=self._export, args=(plan["items"],), daemon=True).start()
+            items = [*plan['checks'], *plan['items']]
+            self._begin_export(items)
+            threading.Thread(target=self._export, args=(items,), daemon=True).start()
             return dict(self.export_job)
+
+    def _begin_export(self, items):
+        run = {'id': uuid.uuid4().hex, 'status': 'running', 'startedAt': time.time(), 'total': len(items), 'done': 0, 'succeeded': 0, 'verified': 0, 'failureCount': 0, 'output': self.config['output'], 'mode': self.config['exportMode']}
+        with self.export_progress_lock:
+            self.export_job = {**run, 'phase': '保存批次记录', 'failures': [], 'updatedAt': time.time(), 'message': '正在保存批次记录，等待磁盘响应'}
+        # The batch header is durable before a file worker can start. Old v2
+        # stores accept this optional field; annotation schema/IDs do not change.
+        runs = dict(self.state.get('exportRuns', {}))
+        runs[run['id']] = run
+        runs = dict(sorted(runs.items(), key=lambda pair: pair[1]['startedAt'])[-100:])
+        try:
+            self.store.commit({'exportRuns': runs})
+        except Exception:
+            self._export_progress('未开始文件处理', status='error', message='批次记录保存失败，未开始整理；请检查磁盘后重新检查')
+            raise
+        self._export_progress('准备整理', message='任务已提交，开始逐项检查文件')
+
+    def export_history(self):
+        with self.lock:
+            runs = copy.deepcopy(self.state.get('exportRuns', {}))
+            groups = {}
+            for record in self.state['operations'].values():
+                identity = record.get('runId', 'legacy')
+                group = groups.setdefault(identity, {'done': 0, 'succeeded': 0, 'verified': 0, 'failureCount': 0, 'failures': [], 'startedAt': 0})
+                group['done'] += 1
+                group['succeeded'] += record.get('status') == 'done' and not record.get('verifiedAt')
+                group['verified'] += record.get('status') == 'done' and bool(record.get('verifiedAt'))
+                group['failureCount'] += record.get('status') != 'done'
+                group['startedAt'] = max(group['startedAt'], record.get('startedAt', 0), record.get('finishedAt', 0))
+                if record.get('status') != 'done' and len(group['failures']) < 50:
+                    group['failures'].append({'name': Path(record.get('source', '')).name, 'error': record.get('error', '上次中断，需重新检查')})
+            for identity, run in runs.items():
+                if run['status'] == 'running':
+                    if self.export_job.get('id') == identity:
+                        run.update(self.export_status())
+                    else:
+                        group = groups.get(identity, {})
+                        run.update({key: value for key, value in group.items() if key != 'startedAt'})
+                        run['status'] = 'interrupted'
+            if 'legacy' in groups:
+                group = groups['legacy']
+                runs['legacy'] = {**group, 'id': 'legacy', 'status': 'legacy', 'total': group['done'], 'message': '旧版文件整理记录（不是完整批次历史）'}
+            return {'runs': sorted(runs.values(), key=lambda run: run['startedAt'], reverse=True), 'project': str(self.source), 'message': '历史跟随原项目保存；继续整理会按当前标签与输出规则重新检查，不重复搬动已归位文件。'}
+
+    def _export_progress(self, phase=None, **values):
+        with self.export_progress_lock:
+            if phase:
+                values.update(phase=phase, phaseBytes=0)
+            self.export_job.update(updatedAt=time.time(), **values)
+
+    def export_status(self):
+        with self.export_progress_lock:
+            job = dict(self.export_job)
+            failures = job.pop('failures', [])
+            return {**job, 'failures': failures[:50], 'failureCount': len(failures), 'failuresTruncated': len(failures) > 50, 'elapsedSeconds': int(time.time() - job.get('startedAt', time.time())), 'idleSeconds': int(time.time() - job.get('updatedAt', time.time()))}
+
+    @staticmethod
+    def _temporary_output(destination, clip=False):
+        # Never append a UUID to the full media name (225 -> 263 on reported UNC).
+        suffix = destination.suffix if clip else ''
+        return destination.with_name(f'.vr-{uuid.uuid4().hex}.tmp{suffix}')
+
+    def _hash_export_file(self, path, phase):
+        self._export_progress(phase)
+        return sha256_file(io_path(path), lambda done: self._export_progress(phaseBytes=done))
 
     def _clip(self, video, item, temporary):
         segment = item["segment"]
-        keyframes = self.video_info(video.id)['keyframes'] or ffprobe_keyframes(video.path)
+        keyframes = self.video_info(video.id)['keyframes'] or ffprobe_keyframes(io_path(video.path))
         start = nearest_keyframe_at_or_before(keyframes, segment["start"])
         duration = segment["end"] - segment["start"]
-        result = run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", f"{start:.6f}", "-i", str(video.path), "-t", f"{duration:.6f}", "-map", "0", "-c", "copy", "-map_metadata", "0", "-avoid_negative_ts", "make_zero", str(temporary)])
+        result = run_command(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-ss", f"{start:.6f}", "-i", str(io_path(video.path)), "-t", f"{duration:.6f}", "-map", "0", "-c", "copy", "-map_metadata", "0", "-avoid_negative_ts", "make_zero", str(io_path(temporary))])
         if result.returncode:
             raise RuntimeError(result.stderr.strip()[-1200:] or "截取失败")
-        return {"actualStart": start, "requestedStart": segment["start"], "requestedEnd": segment["end"], "actualDuration": ffprobe_duration(temporary)}
+        return {"actualStart": start, "requestedStart": segment["start"], "requestedEnd": segment["end"], "actualDuration": ffprobe_duration(io_path(temporary))}
 
     def _record_operation(self, key, value):
+        if self.export_job['status'] == 'running':
+            self._export_progress('保存整理记录')
         with self.lock:
             self.store.commit(merge={"operations": {key: value}})
 
@@ -681,6 +780,7 @@ class ProjectApp(LabelApp):
         NAS mounts may not implement hard links. Exclusive creation is the
         fallback; a partial file created by this call is removed on failure.
         """
+        temporary, destination = io_path(temporary), io_path(destination)
         try:
             os.link(temporary, destination)
             return
@@ -703,99 +803,140 @@ class ProjectApp(LabelApp):
                 destination.unlink(missing_ok=True)
             raise
 
-    def _move_original(self, video, destination):
-        digest = sha256_file(video.path)
+    def _move_original(self, video, destination, digest=None):
+        source, destination = io_path(video.path), io_path(destination)
+        digest = digest or self._hash_export_file(source, '校验原文件')
         if destination.exists():
-            if not destination.is_file() or sha256_file(destination) != digest:
+            if os.path.samefile(source, destination):
+                raise ValueError('输入与输出指向同一文件，未删除原文件')
+            if not destination.is_file() or self._hash_export_file(destination, '核验同名成品') != digest:
                 raise ValueError("同名文件内容不同，未覆盖")
         else:
-            temporary = destination.with_name(f'.{destination.name}.{uuid.uuid4().hex}.tmp')
+            temporary = self._temporary_output(destination)
             try:
-                copy_file_bytes(video.path, temporary)
-                if sha256_file(temporary) != digest:
+                self._export_progress('复制临时文件')
+                copy_file_bytes(source, temporary, lambda done: self._export_progress(phaseBytes=done))
+                if self._hash_export_file(temporary, '校验临时文件') != digest:
                     raise ValueError("移动内容校验失败，原文件保留")
+                self._export_progress('发布成品')
                 self._publish_original(temporary, destination, digest)
             finally:
                 temporary.unlink(missing_ok=True)
         # Verify again before the only destructive step, including concurrent
         # changes to the source during a long network copy.
-        if sha256_file(video.path) != digest or sha256_file(destination) != digest:
+        if self._hash_export_file(source, '删除前核对原文件') != digest or self._hash_export_file(destination, '删除前核对成品') != digest:
             raise ValueError("移动期间文件发生变化，原文件保留")
-        video.path.unlink()
+        self._export_progress('移除已校验的原文件')
+        source.unlink()
 
     def _export(self, items):
-        failures = []
+        if self.export_job['status'] != 'running':
+            with self.lock:
+                self._begin_export(items)
+        failures, verified = [], 0
         for index, item in enumerate(items, 1):
-            temporary = None
+            temporary = source = None
+            record = {**item, 'runId': self.export_job['id'], 'status': 'running', 'startedAt': time.time()}
             try:
-                video = self.get_video(item["id"])
-                stat = video.path.stat()
+                self._export_progress('检查原文件', name=Path(item['source']).name, size=item['size'], message=f'{index}/{len(items)} · {Path(item["source"]).name}')
+                video = self._export_video(item["id"])
+                if item.get('annotationRevision', self.annotation(video.id)['revision']) != self.annotation(video.id)['revision']:
+                    raise ValueError('确认后标注发生变化，未整理；请重新检查计划')
+                source = io_path(video.path)
+                stat = source.stat()
                 asset = self.state['assets'][video.id]
                 if stat.st_size != asset['size'] or stat.st_mtime_ns != asset['modified']:
                     raise ValueError("原视频已在审核后发生变化，请重新扫描并审核；未整理")
                 destination = Path(item["destination"])
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                with self.lock:
-                    self.export_job["message"] = f"{index}/{len(items)} · {video.name}"
-                record = {**item, "status": "running", "startedAt": time.time()}
+                target = io_path(destination)
+                self._export_progress('检查目标目录')
+                if target.exists() and os.path.samefile(source, target):
+                    raise ValueError('输入与输出指向同一文件，未删除原文件')
+                receipt = self.state['operations'].get(item['key'], {})
+                if receipt.get('status') == 'done' and target.is_file():
+                    output_stat = target.stat()
+                    unchanged = output_stat.st_size == receipt.get('outputSize') and output_stat.st_mtime_ns == receipt.get('outputModified')
+                    if not unchanged and (not receipt.get('digest') or self._hash_export_file(target, '核验已整理成品') != receipt['digest']):
+                        raise ValueError('已整理成品被修改，未覆盖')
+                    record = {**receipt, 'runId': self.export_job['id'], 'verifiedAt': time.time()}
+                    self._record_operation(item['key'], record)
+                    verified += 1
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
                 if item["kind"] == "clip":
-                    if destination.exists():
+                    if target.exists():
                         raise ValueError("输出片段已存在，未覆盖")
-                    temporary = destination.with_name(f".{destination.stem}.{uuid.uuid4().hex}.tmp{destination.suffix}")
+                    temporary = io_path(self._temporary_output(destination, clip=True))
                     record["temporary"] = str(temporary)
                     self._record_operation(item["key"], record)
+                    self._export_progress('零重编码截取')
                     record.update(self._clip(video, item, temporary))
                     if record["actualDuration"] <= 0:
                         raise ValueError("输出片段无法读取，未发布成品")
-                    record["digest"] = sha256_file(temporary)
+                    record["digest"] = self._hash_export_file(temporary, '校验截取成品')
                     self._record_operation(item["key"], record)
                     # User/external file could appear while FFmpeg was running.
-                    if destination.exists():
+                    if target.exists():
                         raise ValueError("输出文件在导出期间出现，未覆盖")
-                    self._publish_original(temporary, destination, record['digest'])
+                    self._export_progress('发布成品')
+                    self._publish_original(temporary, target, record['digest'])
                 else:
-                    record["digest"] = sha256_file(video.path)
+                    record["digest"] = self._hash_export_file(source, '校验原文件')
                     self._record_operation(item["key"], record)
                     if item["kind"] == "move":
-                        self._move_original(video, destination)
+                        self._move_original(video, target, record['digest'])
                     else:
-                        if destination.exists():
-                            if sha256_file(destination) != record["digest"]:
+                        if target.exists():
+                            if self._hash_export_file(target, '核验同名成品') != record["digest"]:
                                 raise ValueError("同名文件内容不同，未覆盖")
                         else:
-                            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-                            copy_file_bytes(video.path, temporary)
-                            if sha256_file(temporary) != record["digest"]:
+                            temporary = io_path(self._temporary_output(destination))
+                            self._export_progress('复制临时文件')
+                            copy_file_bytes(source, temporary, lambda done: self._export_progress(phaseBytes=done))
+                            if self._hash_export_file(temporary, '校验临时文件') != record["digest"]:
                                 raise ValueError("复制内容校验失败")
-                            if destination.exists():
+                            if target.exists():
                                 raise ValueError("目标文件在复制期间出现，未覆盖")
-                            self._publish_original(temporary, destination, record['digest'])
+                            self._export_progress('发布成品')
+                            self._publish_original(temporary, target, record['digest'])
                     if item["kind"] == "move":
+                        self._export_progress('保存整理记录')
                         with self.lock:
-                            asset = {**self.state["assets"][video.id], "path": self.location(destination), "originLabel": item["label"], "modified": destination.stat().st_mtime_ns}
+                            asset = {**self.state["assets"][video.id], "path": self._known_location(destination), "originLabel": item["label"], "modified": target.stat().st_mtime_ns}
                             self.store.commit(merge={"assets": {video.id: asset}})
                             updated = replace(video, path=destination, relative=asset["path"], origin_label=item["label"])
                             self.video_by_id[video.id] = updated
                             self.videos = [updated if value.id == video.id else value for value in self.videos]
-                output_stat = destination.stat()
+                output_stat = target.stat()
                 record.update(status="done", finishedAt=time.time(), outputSize=output_stat.st_size, outputModified=output_stat.st_mtime_ns)
                 self._record_operation(item["key"], record)
             except Exception as exc:
-                failures.append({"id": item["id"], "name": Path(item["source"]).name, "error": str(exc)})
+                phase = self.export_job.get('phase', '')
+                error = str(exc)
+                if isinstance(exc, FileNotFoundError):
+                    error += '；请检查源文件/输出目录是否可访问；Windows 长路径请使用新版或更短的输出目录。'
+                failures.append({"id": item["id"], "name": Path(item["source"]).name, 'source': item['source'], 'destination': item['destination'], 'phase': phase, "error": error})
                 try:
-                    self._record_operation(item["key"], {**item, "status": "error", "error": str(exc)})
-                except OSError:
-                    pass
+                    # Keep a verified digest for recovery if deletion succeeded
+                    # but the following asset/journal update was interrupted.
+                    recoverable = item['kind'] == 'move' and record.get('digest') and source is not None and not source.exists()
+                    self._record_operation(item["key"], {**record, "status": 'running' if recoverable else 'error', "error": error})
+                except (OSError, RuntimeError) as record_error:
+                    failures[-1]['error'] += f'；失败记录保存异常：{record_error}，请保留整个项目目录。'
             finally:
                 if temporary:
                     try:
                         temporary.unlink(missing_ok=True)
                     except OSError:
                         pass  # A cleanup failure must not stop later items.
-                with self.lock:
-                    self.export_job.update(done=index, failures=list(failures))
-        with self.lock:
-            self.export_job.update(status="error" if failures else "done", message=f"成功 {len(items)-len(failures)} 项，失败 {len(failures)} 项；失败项可重试，原 CSV 未修改")
+                self._export_progress(done=index, failures=failures, failureCount=len(failures), verified=verified)
+        result = {'status': 'error' if failures else 'done', 'finishedAt': time.time(), 'done': len(items), 'succeeded': len(items)-len(failures)-verified, 'verified': verified, 'failureCount': len(failures), 'failures': failures[:50], 'message': f'新整理 {len(items)-len(failures)-verified} 项，已核验 {verified} 项，失败 {len(failures)} 项；失败不阻塞后续，原 CSV 未修改'}
+        try:
+            with self.lock:
+                self.store.commit(merge={'exportRuns': {self.export_job['id']: {**self.state['exportRuns'][self.export_job['id']], **result}}})
+        except (OSError, RuntimeError) as exc:
+            result.update(status='error', message=result['message'] + f'；批次汇总保存失败：{exc}。逐文件记录仍用于恢复，请勿删除项目进度。')
+        self._export_progress('整理结束', **{**result, 'failures': failures})
 
     def _recover_operations(self):
         for key, record in list(self.state["operations"].items()):
@@ -804,16 +945,18 @@ class ProjectApp(LabelApp):
             destination = self.resolve(record.get('destinationLocation', record['destination']))
             # Rebind receipts inside a relocated project to its new root.
             asset = self.state["assets"].get(record["id"])
-            if destination.is_file() and record.get("digest") and sha256_file(destination) == record["digest"]:
+            target = io_path(destination)
+            if target.is_file() and record.get("digest") and sha256_file(target) == record["digest"]:
                 if record["kind"] == "move" and asset:
                     source = self.resolve(record.get('sourceLocation', record['source']))
-                    if source.exists() and source.resolve() != destination.resolve():
-                        if sha256_file(source) != record['digest']:
+                    source_file = io_path(source)
+                    if source_file.exists() and not os.path.samefile(source_file, target):
+                        if sha256_file(source_file) != record['digest']:
                             self._record_operation(key, {**record, 'status': 'error', 'error': '中断后原文件发生变化，请人工确认；未删除'})
                             continue
-                        source.unlink()
-                    self.store.commit(merge={"assets": {record["id"]: {**asset, "path": self.location(destination), "originLabel": record["label"], "modified": destination.stat().st_mtime_ns}}})
-                output_stat = destination.stat()
+                        source_file.unlink()
+                    self.store.commit(merge={"assets": {record["id"]: {**asset, "path": self._known_location(destination), "originLabel": record["label"], "modified": target.stat().st_mtime_ns}}})
+                output_stat = target.stat()
                 self._record_operation(key, {**record, "status": "done", "recovered": True, 'outputSize': output_stat.st_size, 'outputModified': output_stat.st_mtime_ns})
             else:
                 self._record_operation(key, {**record, "status": "error", "error": "上次整理中断，原数据保留，请重新整理"})
@@ -842,9 +985,16 @@ class ProjectHandler(LabelHandler):
             elif route.path == "/api/video-info":
                 self.send_json(app.video_info(query.get("id", [""])[0]))
             elif route.path == "/api/export-plan":
-                self.send_json({**app.export_plan(), "seq": app.state["seq"]})
+                plan = app.export_plan()
+                self.send_json({**{key: value for key, value in plan.items() if key not in {'items', 'checks'}}, 'itemCount': len(plan['items']), 'checkCount': len(plan['checks'])})
             elif route.path == "/api/export-status":
-                self.send_json(dict(app.export_job))
+                self.send_json(app.export_status())
+            elif route.path == '/api/export-history':
+                self.send_json(app.export_history())
+            elif route.path == '/api/export-errors':
+                with app.export_progress_lock:
+                    report = {'project': str(app.source), 'runId': app.export_job.get('id'), 'failures': list(app.export_job.get('failures', []))}
+                self.send_json(report)
             elif route.path == "/api/proxy-all-status":
                 self.send_json(dict(app.proxy_all_job))
             elif route.path == "/api/proxy-status":

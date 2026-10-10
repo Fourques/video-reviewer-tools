@@ -61,13 +61,29 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.keyboard.press('Space');await page.waitForFunction(()=>state.pending.length===0);
   assert.equal(await page.evaluate(()=>state.current.annotation.segments.length),1);
   await page.keyboard.press('Enter');await page.waitForFunction(()=>deck.readyToReview&&state.pending.length===0);
+  // Dialog is visible before NAS/plan responses arrive. Confirm reuses that
+  // preview instead of making a second GET and freezing for another preflight.
+  let releasePlan, planGets=0;const planGate=new Promise(resolve=>releasePlan=resolve);
+  await page.route('**/api/export-plan',async route=>{planGets++;await planGate;await route.continue();});
   await page.locator('#organize').click();await page.locator('#exportDialog').waitFor({state:'visible'});
+  assert(await page.locator('#startExport').isDisabled());releasePlan();await page.locator('#startExport').waitFor();await page.waitForFunction(()=>!document.getElementById('startExport').disabled);
   const [exportResponse]=await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/export')&&response.request().method()==='POST'),page.locator('#startExport').click()]);assert(exportResponse.ok());
   await page.waitForFunction(()=>!state.exportRunning,{timeout:30000});
+  assert.equal(planGets,1,'Confirm repeated the expensive export-plan request');await page.unroute('**/api/export-plan');
   assert(fs.existsSync(path.join(source,'output','fall','01.mp4')));assert(fs.existsSync(path.join(source,'output','clips')));
   await page.locator('[data-close=exportDialog]').click();await page.screenshot({path:path.join(root,'intervals.png')});
   assert.deepEqual(errors,[]);
   await page.reload();await page.waitForFunction(()=>deck.readyToReview);assert.equal(await page.evaluate(()=>state.config.labels.length),4);
+  await page.locator('#organizeHistory').click();await page.locator('#exportHistoryList .export-run').first().waitFor();assert.match(await page.locator('#exportHistoryList').textContent(),/已完成/);
+  await page.screenshot({path:path.join(root,'export-history.png')});
+  await page.locator('#continueExport').click();await page.locator('#exportDialog').waitFor({state:'visible'});await page.waitForFunction(()=>state.exportPlan!==null);
+  assert.equal(await page.evaluate(()=>state.exportPlan.itemCount),0,'Reopened history re-exported completed moves or clips');await page.locator('[data-close=exportDialog]').click();
+  const longName='kamicare_'+('long-filename-'.repeat(16))+'.mp4';
+  await page.route('**/api/export-status',route=>route.fulfill({json:{status:'error',done:4092,total:4092,failureCount:60,failuresTruncated:true,message:'新整理 4032 项，失败 60 项',failures:Array.from({length:50},()=>({name:longName,error:'No such file or directory: \\\\192.168.8.27\\share\\'+longName+'.tmp'}))}}));
+  await page.locator('#organize').click();await page.waitForFunction(()=>state.exportPlan!==null);await page.evaluate(()=>pollExport());
+  assert.match(await page.locator('#exportErrors').textContent(),/共 60 条/);await page.setViewportSize({width:1024,height:640});
+  const dialogOverflow=await page.locator('#exportDialog .dialog-body').evaluate(element=>element.scrollWidth-element.clientWidth);assert(dialogOverflow<=1,'Long error paths created a horizontal scrollbar');
+  await page.screenshot({path:path.join(root,'export-errors.png')});await page.unroute('**/api/export-status');await page.locator('[data-close=exportDialog]').click();await page.setViewportSize({width:1366,height:768});
   // Show a slow CSV stage and exercise the skip control in the actual page.
   let skipped=false;await page.route('**/api/startup-status',route=>route.fulfill({json:{status:skipped?'ready':'scanning',stage:'匹配 CSV 字段',done:12000,total:null,message:'index.csv · CSV 行数',elapsedSeconds:25,idleSeconds:21,canSkipMetadata:!skipped}}));
   await page.route('**/api/startup-skip-metadata',route=>{skipped=true;return route.fulfill({json:{ok:true}});});

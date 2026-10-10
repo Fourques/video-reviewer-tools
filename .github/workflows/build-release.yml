@@ -52,7 +52,7 @@ jobs:
           echo "$desktop_links"
           if [[ "$desktop_links" == *"not found"* ]]; then exit 1; fi
       - name: Syntax checks
-        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py project_app.py project_store.py project_schema.py desktop_window.py app_runtime.py scan_support.py
+        run: python -m py_compile start.py launcher_server.py reviewer.py quick_labeler.py project_app.py project_store.py project_schema.py desktop_window.py app_runtime.py scan_support.py file_paths.py
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Playback regression tests

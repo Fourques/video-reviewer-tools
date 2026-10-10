@@ -49,6 +49,7 @@ function updateSaveState() {
   $('saveState').classList.toggle('error',state.failed);
 }
 function enqueue(annotation, advance=false) {
+  if(state.exportRunning){notice('整理中暂不能修改标注，请等待本批完成',true);return;}
   if(!state.current) return;
   const video=state.current, before=clone(video.annotation);
   const next=advance?nextVideo(1):null;
@@ -367,10 +368,47 @@ document.querySelectorAll('[data-browse]').forEach(button=>button.onclick=()=>br
 $('folderList').onclick=event=>{const button=event.target.closest('button');if(button?.dataset.folder)loadFolder(button.dataset.folder);else if(button?.dataset.file){$('csvPath').value=button.dataset.file;$('folderDialog').close();$('readCsv').click();}};
 $('chooseFolder').onclick=()=>{$(state.folderTarget).value=state.folder.path;$('folderDialog').close();};
 
-let exportTimer;
-async function showExport() {try{await flush();const plan=await api('/api/export-plan');state.exportPlan=plan;$('exportDescription').textContent=state.config.exportMode==='move'?'确认后移动已完成整段视频；区间导出不删除原视频。':'确认后复制整段视频 / 截取区间；原视频保留。';$('exportCounts').innerHTML=Object.entries(plan.counts).map(([label,count])=>`<p>${escapeText(labelName(label))}：${count}</p>`).join('');$('exportMessage').textContent=plan.message;$('exportErrors').textContent=plan.conflicts.join('\n');$('exportProgress').value=0;$('startExport').disabled=!!plan.conflicts.length||!plan.items.length;$('startExport').textContent='确认整理';$('exportDialog').showModal();pollExport();}catch(error){notice(error.message);}}
-async function pollExport() {clearTimeout(exportTimer);try{const job=await api('/api/export-status');if(job.status!=='idle'){$('exportProgress').value=job.total?100*job.done/job.total:100;$('exportMessage').textContent=job.message;$('exportErrors').textContent=(job.failures||[]).map(item=>`${item.name}：${item.error}`).join('\n');$('startExport').disabled=job.status==='running';$('startExport').textContent=job.status==='error'?'重试失败项':'重新检查';if(job.status==='running')exportTimer=setTimeout(pollExport,500);else if(state.exportRunning){state.exportRunning=false;adopt(await api('/api/project'));state.exportPlan=await api('/api/export-plan');$('startExport').disabled=!state.exportPlan.items.length;}}}catch(error){$('exportErrors').textContent=error.message;}}
-$('organize').onclick=showExport;$('startExport').onclick=async()=>{if(state.exportRunning)return;$('startExport').disabled=true;state.exportRunning=true;try{await flush();const plan=await api('/api/export-plan');if(plan.conflicts.length)throw new Error(plan.conflicts.join('\n'));if(!plan.items.length){state.exportRunning=false;$('exportMessage').textContent='全部完成，无需重复整理';return;}await post('/api/export',{seq:plan.seq});pollExport();}catch(error){state.exportRunning=false;$('startExport').disabled=false;$('exportErrors').textContent=error.message;}};
+let exportTimer, exportView=0;
+const historyButton=document.createElement('button');historyButton.id='organizeHistory';historyButton.textContent='整理历史';$('organize').before(historyButton);
+function renderExportJob(job) {
+  $('exportProgress').value=job.total?100*job.done/job.total:0;
+  $('exportMessage').textContent=job.status==='running'?`${job.done}/${job.total} 已处理 · 失败 ${job.failureCount||0} · ${job.name||'准备中'}`:job.message;
+  const bytes=job.phaseBytes?` · 本阶段 ${(job.phaseBytes/1048576).toFixed(1)} MB${job.size?` / ${(job.size/1048576).toFixed(1)} MB`:''}`:'';
+  $('exportPhase').textContent=job.status==='running'?`${job.phase||'准备整理'}${bytes} · 已用 ${job.elapsedSeconds||0} 秒${job.idleSeconds>=10?' · 正在等待磁盘/网络响应，请勿重复启动':''}`:'整段文件不转码；移动前校验内容，片段零重编码。';
+  $('exportErrors').textContent=(job.failures||[]).map(item=>`${item.name}\n${item.phase?item.phase+'：':''}${item.error}`).join('\n\n')+(job.failuresTruncated?`\n仅展示前 50 条，共 ${job.failureCount} 条；可下载完整清单。`:'');
+  $('downloadExportErrors').hidden=!job.failureCount;$('startExport').disabled=job.status==='running';$('startExport').textContent=job.status==='running'?'整理中…':'重新检查 / 继续';
+}
+async function showExport() {
+  const view=++exportView;clearTimeout(exportTimer);$('exportHistoryDialog').close();if(!$('exportDialog').open)$('exportDialog').showModal();
+  state.exportPlan=null;$('startExport').disabled=true;$('startExport').textContent='准备中…';$('exportCounts').textContent='';$('exportErrors').textContent='';$('downloadExportErrors').hidden=true;$('exportProgress').removeAttribute('value');$('exportMessage').textContent='正在准备计划，等待未保存标签确认…';$('exportPhase').textContent='此窗口可关闭；关闭窗口不会中断已经开始的整理。';
+  $('exportDescription').textContent=(state.config.exportMode==='move'?'确认后移动已完成整段视频；区间导出不删除原视频。':'确认后复制整段视频 / 截取区间；原视频保留。')+` 输出：${state.config.output}（单独绑定目录以项目设置为准）`;
+  try {
+    const job=await api('/api/export-status');if(view!==exportView)return;
+    if(job.status==='running'){state.exportRunning=true;renderExportJob(job);pollExport();return;}
+    await flush();const plan=await api('/api/export-plan');if(view!==exportView)return;
+    state.exportRunning=false;state.exportPlan=plan;$('exportCounts').innerHTML=Object.entries(plan.counts).map(([label,count])=>`<span class="badge">${escapeText(labelName(label))}：${count}</span>`).join('');$('exportProgress').value=0;$('exportMessage').textContent=plan.message;$('exportErrors').textContent=plan.conflicts.join('\n');$('startExport').disabled=!!plan.conflicts.length||!(plan.itemCount+plan.checkCount);$('startExport').textContent='确认整理';
+  }catch(error){if(view===exportView){$('exportProgress').value=0;$('exportErrors').textContent=error.message;$('startExport').textContent='重新检查';$('startExport').disabled=false;}}
+}
+async function pollExport() {
+  clearTimeout(exportTimer);
+  try {
+    const job=await api('/api/export-status');if(job.status==='idle')return;renderExportJob(job);
+    if(job.status==='running'){state.exportRunning=true;exportTimer=setTimeout(pollExport,750);}
+    else {const wasRunning=state.exportRunning;state.exportRunning=false;state.exportPlan=null;if(wasRunning){adopt(await api('/api/project'));historyButton.textContent=job.failureCount?`整理历史 · ${job.failureCount} 失败`:'整理历史';}}
+  }catch(error){$('exportErrors').textContent=error.message;if(state.exportRunning)exportTimer=setTimeout(pollExport,2000);}
+}
+$('organize').onclick=showExport;$('startExport').onclick=async()=>{
+  if(state.exportRunning)return;if(!state.exportPlan){showExport();return;}
+  const plan=state.exportPlan;$('startExport').disabled=true;$('startExport').textContent='正在提交…';$('exportMessage').textContent='正在保存批次并启动，等待磁盘响应；请勿重复点击。';$('exportProgress').removeAttribute('value');state.exportRunning=true;
+  try {await flush();await post('/api/export',{seq:plan.seq});state.exportPlan=null;pollExport();}
+  catch(error){state.exportPlan=null;try{const job=await api('/api/export-status');if(job.status==='running'){pollExport();return;}}catch{}state.exportRunning=false;$('startExport').disabled=false;$('startExport').textContent='重新检查';$('exportErrors').textContent=error.message;$('exportProgress').value=0;}
+};
+async function showExportHistory() {
+  ++exportView;clearTimeout(exportTimer);$('exportDialog').close();if(!$('exportHistoryDialog').open)$('exportHistoryDialog').showModal();$('exportHistoryHint').textContent='正在读取项目中的整理记录…';$('exportHistoryList').textContent='';
+  try {const data=await api('/api/export-history');$('exportHistoryHint').textContent=data.message;$('exportHistoryList').innerHTML=data.runs.length?data.runs.map(run=>`<article class="export-run"><div class="section-title"><span>${escapeText(({done:'已完成',error:'有失败项',interrupted:'上次中断',running:'正在整理',legacy:'旧版记录'})[run.status]||run.status)}</span><span class="muted">${run.startedAt?escapeText(new Date(run.startedAt*1000).toLocaleString()):'旧版时间未记录'}</span></div><p>总计 ${run.total} · 新整理 ${run.succeeded||0} · 已核验 ${run.verified||0} · 失败 ${run.failureCount||0}${run.status==='interrupted'?` · 未处理 ${Math.max(0,run.total-run.done)}`:''}</p>${run.output?`<p class="hint">输出：${escapeText(run.output)}</p>`:''}${run.message?`<p class="hint">${escapeText(run.message)}</p>`:''}${run.failures?.length?`<details><summary>查看失败记录（最多 50 条）</summary><div class="error-list">${run.failures.map(item=>escapeText(item.name+'：'+item.error)).join('\n\n')}</div></details>`:''}</article>`).join(''):'<p class="hint">暂无整理记录。旧标签仍保存在项目中，可以直接检查并开始整理。</p>';}catch(error){$('exportHistoryHint').textContent=error.message;}
+}
+historyButton.onclick=$('openExportHistory').onclick=showExportHistory;$('continueExport').onclick=showExport;
+$('downloadExportErrors').onclick=async()=>{try{download('video-reviewer-export-errors.json',await api('/api/export-errors'));}catch(error){$('exportErrors').textContent=error.message;}};
 
 $('saveState').onclick=()=>{if(!state.failed)return;$('failedSaves').innerHTML=state.pending.map(item=>`<p>${escapeText(state.videos.find(video=>video.id===item.id)?.name||item.id)}：${escapeText(item.error||'排队中')}</p>`).join('');$('failureDialog').showModal();};
 $('retrySaves').onclick=async()=>{if(state.pending.some(item=>item.conflict)){notice('存在修改冲突，不能自动覆盖。请下载未保存记录，刷新后确认服务器版本再重新标注。',true);return;}state.failed=false;await drain();if(!state.failed)$('failureDialog').close();};$('downloadFailed').onclick=()=>download('video-reviewer-unsaved.json',{projectId:state.config.id,records:state.pending});
@@ -399,5 +437,6 @@ async function init() {
   updateSaveState();
   if(document.migration.imported)notice(`已迁入 ${document.migration.imported} 条旧进度，旧文件保留。目录原分类与本轮完成状态已分开。`);
   const warnings=[document.warning,document.metadataWarning,...(document.migration.warnings||[])].filter(Boolean);if(warnings.length)notice(warnings.slice(0,4).join('；'),true);
+  api('/api/export-history').then(data=>{const latest=data.runs[0];if(latest&&(latest.failureCount||latest.status==='interrupted')){historyButton.textContent='整理历史 · 待处理';if(!warnings.length)notice('检测到上次整理有失败或中断。点击“整理历史”可查看并继续，已保存标签保留。',true);}return api('/api/export-status');}).then(job=>{if(job.status==='running'){state.exportRunning=true;pollExport();}}).catch(()=>{});
 }
 init().catch(error=>{$('mediaOverlay').textContent=`打开项目失败：${error.message}`;$('mediaOverlay').classList.add('error');});

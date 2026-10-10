@@ -71,6 +71,11 @@ class LargeStartupTests(unittest.TestCase):
             self.assertEqual(identities, [video.id for video in app.videos])
             self.assertEqual(app.state['seq'], sequence, 'Unchanged scan rewrites the entire asset journal')
             self.assertEqual(calls, {'is_file': 24000, 'stat': 24000})
+            # 12000 completed annotations must not perform 12000 further SMB
+            # roundtrips just to open the organize confirmation window.
+            app.state['annotations'] = {video.id: {**app.empty_annotation(), 'label': 'fall', 'status': 'done'} for video in app.videos}
+            with patch.object(Path, 'stat', side_effect=AssertionError('Plan accessed NAS')):
+                self.assertEqual(len(app.export_plan()['items']), 12000)
         self.assertIn('建立视频索引', {values[0] for values in progress})
         self.assertIn('保存目录索引', {values[0] for values in progress})
 

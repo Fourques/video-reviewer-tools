@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from file_paths import io_path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -53,11 +54,15 @@ LABEL_COLUMN_PREFERENCES = (
 )
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, progress=None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
+        read = 0
         while chunk := handle.read(4 * 1024 * 1024):
             digest.update(chunk)
+            read += len(chunk)
+            if progress:
+                progress(read)
     return digest.hexdigest()
 
 
@@ -860,6 +865,7 @@ class LabelHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
 
     def _send_file(self, path: Path, allow_range: bool, send_body: bool = True) -> None:
+        path = io_path(path)
         size = path.stat().st_size
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         start, end, status = 0, size - 1, HTTPStatus.OK

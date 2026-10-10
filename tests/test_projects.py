@@ -198,7 +198,12 @@ class ProjectTests(unittest.TestCase):
         self.save(app, label='fall', status='done')
         app._export(app.export_plan()['items'])
         (self.source / 'output/fall/one.mp4').write_bytes(b'changed by another tool')
-        self.assertTrue(app.export_plan()['conflicts'])
+        plan = app.export_plan()
+        self.assertEqual(len(plan['checks']), 1)
+        app._export(plan['checks'])
+        self.assertIn('被修改', app.export_job['failures'][0]['error'])
+        self.assertEqual((self.source / 'output/fall/one.mp4').read_bytes(), b'changed by another tool')
+        self.assertTrue((self.source / 'one.mp4').exists())
 
     def test_missing_csv_mapping_is_preserved(self):
         app = self.app()
