@@ -42,6 +42,13 @@ def main():
                 else:
                     raise AssertionError('Native app did not decode its video in 80 seconds')
                 assert window.evaluate_js('deck.preferences.loop')
+                assert window.evaluate_js('videoReviewerBrowserSupported && !document.documentMode')
+                assert window.evaluate_js('getComputedStyle(document.body).backgroundColor === "rgb(17, 21, 28)"')
+                assert window.evaluate_js('getComputedStyle(document.querySelector(".workbench")).display === "grid"')
+                assert window.evaluate_js('typeof HTMLDialogElement.prototype.showModal === "function"')
+                if sys.platform == 'win32':
+                    from webview import guilib
+                    assert guilib.renderer == 'edgechromium', 'Windows fell back to IE'
                 window.evaluate_js('chooseLabel("fall")')
                 for _ in range(100):
                     if window.evaluate_js('state.pending.length === 0 && state.videos[0].annotation.label === "fall"'):

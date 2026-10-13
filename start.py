@@ -153,7 +153,7 @@ def main() -> int:
             stream.reconfigure(errors="backslashreplace")
     args = parse_args()
     if args.self_test:
-        required = ["project_center.html", "workbench.html", "workbench.js", "workbench.css", "media.js", "app.js", "playback.js", "layout.css"]
+        required = ["project_center.html", "workbench.html", "workbench.js", "workbench.css", "media.js", "app.js", "playback.js", "layout.css", "browser_guard.js"]
         missing = [name for name in required if not Path(__file__).with_name(name).is_file()]
         if missing:
             print(f"自检失败：缺少资源文件：{', '.join(missing)}", file=sys.stderr)
@@ -174,7 +174,7 @@ def main() -> int:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            for route in ("/", "/assets/workbench.js", "/assets/workbench.css", "/assets/media.js", "/assets/app.js", "/assets/playback.js", "/api/runtime"):
+            for route in ("/", "/assets/workbench.js", "/assets/workbench.css", "/assets/media.js", "/assets/app.js", "/assets/playback.js", "/assets/browser_guard.js", "/api/runtime"):
                 connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
                     connection.request("GET", route)
@@ -232,14 +232,14 @@ def main() -> int:
         return ProjectApp(source, project, progress), ProjectHandler
 
     try:
-        run_launcher(
+        launch_result = run_launcher(
             args.host, args.port, load_settings(), Path(__file__).with_name("project_center.html"),
             save_settings, open_browser=not args.no_browser and not remote_session and not desktop,
             prepare_project=prepare_project, initial_selection=selection, auto_close=auto_close, desktop=desktop,
         )
     finally:
         reviewer.stop_background_commands()
-    return 0
+    return 1 if launch_result is False else 0
 
 
 if __name__ == "__main__":

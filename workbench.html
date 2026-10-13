@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频标注工作台</title><link rel="stylesheet" href="/assets/workbench.css"><script src="/assets/app.js" defer></script><script src="/assets/playback.js" defer></script><script src="/assets/media.js" defer></script><script src="/assets/workbench.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>视频标注工作台</title><script src="/assets/browser_guard.js"></script><link rel="stylesheet" href="/assets/workbench.css"><script src="/assets/app.js" defer></script><script src="/assets/playback.js" defer></script><script src="/assets/media.js" defer></script><script src="/assets/workbench.js" defer></script></head>
 <body>
 <div class="shell">
   <header class="appbar"><button id="collapseList" class="icon" title="收起 / 展开视频列表" aria-label="收起视频列表">☰</button><div class="brand">Video<span>Reviewer</span><small>2.0</small></div><button id="switchProject" class="project-button" title="切换项目"><span id="projectName">正在打开项目</span> ▾</button><div class="progress-group"><span id="progressText">正在载入…</span><progress id="reviewProgress" max="100" value="0"></progress></div><span id="saveState" class="save-state" role="status">连接中</span><button id="organize" class="primary">整理文件</button><button id="settings">项目设置</button><button id="quit" class="icon" title="退出工具并释放端口">退出</button></header>

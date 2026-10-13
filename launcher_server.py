@@ -266,7 +266,7 @@ def run_launcher(
     app = LauncherApp(settings, html_path, save_selection)
     server = LauncherServer((host, port), app, prepare_project, auto_close)
     shown_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    url = f"http://{shown_host}:{port}"
+    url = f"http://{shown_host}:{server.server_port}"
     safe_log(f"项目选择页面：{url}")
     safe_log("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。")
     browser_timer = None
@@ -277,7 +277,6 @@ def run_launcher(
         browser_timer = threading.Timer(0.4, open_if_running)
         browser_timer.daemon = True
         browser_timer.start()
-    server.runtime.watch(server)
     if initial_selection:
         server.start_selection(initial_selection)
     try:
@@ -286,6 +285,7 @@ def run_launcher(
             from reviewer import user_cache_dir
             serve_window(server, url, user_cache_dir("desktop-browser"))
         else:
+            server.runtime.watch(server)
             server.serve_forever(poll_interval=0.1)
     except KeyboardInterrupt:
         return None
@@ -297,7 +297,13 @@ def run_launcher(
         safe_log(f'独立窗口组件不可用，改用系统浏览器：{exc}')
         server.runtime.stopped.clear()
         server.runtime.watch(server)
-        webbrowser.open(url, new=2)
+        from desktop_window import open_review_browser, notify_browser_failure
+        try:
+            open_review_browser(url)
+        except RuntimeError as browser_error:
+            safe_log(str(browser_error))
+            notify_browser_failure(str(browser_error))
+            return False
         server.serve_forever(poll_interval=0.1)
     finally:
         server.runtime.stopped.set()

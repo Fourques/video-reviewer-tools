@@ -71,6 +71,21 @@ jobs:
           QT_API: pyside6
           QT_DEBUG_PLUGINS: "1"
         run: xvfb-run -a python tests/test_native_integration.py
+      - name: Prepare WebView2 on isolated Windows CI runner
+        if: matrix.kind == 'windows'
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "MicrosoftEdgeWebview2Setup.exe"
+          Invoke-WebRequest "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $installer
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notlike "*Microsoft*") { throw "Untrusted WebView2 installer" }
+          $setup = Start-Process $installer -ArgumentList "/silent", "/install" -Wait -PassThru
+          Write-Host "WebView2 setup exit code: $($setup.ExitCode); actual renderer is checked next"
+      - name: Native renderer, styling and video integration (Windows)
+        if: matrix.kind == 'windows'
+        timeout-minutes: 3
+        run: python tests/test_native_integration.py
       - name: Build application
         run: python -m PyInstaller --noconfirm --clean VideoReviewer.spec
       - name: Verify bundled FFmpeg and startup (Windows)

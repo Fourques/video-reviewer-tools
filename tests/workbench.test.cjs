@@ -25,6 +25,11 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   const page=await browser.newPage({viewport:{width:1366,height:768}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(base);await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
   assert.equal(await page.evaluate(()=>state.videos.length),8);
+  assert.equal(await page.evaluate(()=>videoReviewerBrowserSupported),true);
+  assert.equal(await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),'rgb(17, 21, 28)');
+  // The fallback explanation itself must work when modern application JS can't.
+  const legacy=await browser.newPage();await legacy.addInitScript(()=>Object.defineProperty(document,'documentMode',{value:11}));await legacy.goto(base+'/projects');await legacy.locator('#browserCompatibilityError').waitFor({state:'visible'});assert.match(await legacy.locator('#browserCompatibilityError').textContent(),/旧 IE/);await legacy.screenshot({path:path.join(root,'unsupported-renderer.png')});await legacy.close();
+  const missingStyle=await browser.newPage();await missingStyle.route('**/assets/workbench.css',route=>route.abort());await missingStyle.goto(base+'/projects');await missingStyle.locator('#browserCompatibilityError').waitFor({state:'visible'});assert.match(await missingStyle.locator('#browserCompatibilityError').textContent(),/资源未完整加载/);await missingStyle.close();
   // Large queues remain virtualized, even while the full project is fetched.
   await page.route('**/api/project',async route=>{const response=await route.fetch();const data=await response.json();const original=data.videos[0];data.videos.push(...Array.from({length:11992},(_,i)=>({...original,id:`synthetic-${i}`,name:`synthetic-${i}.mp4`,relative:`synthetic-${i}.mp4`})));await route.fulfill({response,json:data});});
   const largeBegan=Date.now();await page.reload();await page.waitForFunction(()=>state.videos.length===12000&&deck.readyToReview);
