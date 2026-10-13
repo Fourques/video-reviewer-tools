@@ -38,11 +38,19 @@ def modern_windows_browsers():
     """Known browser executables, never shell commands or an IE association."""
     import winreg
     seen = set()
-    for executable, relative in (
+    preferred = ''
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice') as key:
+            association = str(winreg.QueryValueEx(key, 'ProgId')[0]).lower()
+            preferred = next((name for prefix, name in (('chrome', 'chrome.exe'), ('firefox', 'firefox.exe'), ('msedge', 'msedge.exe')) if association.startswith(prefix)), '')
+    except OSError:
+        pass
+    programs = (
         ('msedge.exe', Path('Microsoft/Edge/Application/msedge.exe')),
         ('chrome.exe', Path('Google/Chrome/Application/chrome.exe')),
         ('firefox.exe', Path('Mozilla Firefox/firefox.exe')),
-    ):
+    )
+    for executable, relative in sorted(programs, key=lambda item: item[0] != preferred):
         candidates = []
         for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
             for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
@@ -80,6 +88,21 @@ def notify_browser_failure(message):
         ctypes.windll.user32.MessageBoxW(None, str(message), 'VideoReviewer · 浏览器组件不可用', 0x10)
 
 
+def watch_native_startup(runtime, loaded, cancelled, recover, timeout=25):
+    """A WebView2 initialization error only logs and leaves a blank window.
+
+    Don't depend on evaluating JS in a dead renderer. A loaded event or an
+    established page session is sufficient; slow video/directory IO must not
+    close a functioning page. Never trigger recovery after window teardown.
+    """
+    if loaded.wait(timeout) or cancelled.is_set() or runtime.stopped.is_set():
+        return
+    with runtime.lock:
+        if runtime.seen_page:
+            return
+    recover()
+
+
 def serve_window(server, url, storage_path: Path):
     if sys.platform.startswith('linux'):
         os.environ.setdefault('QT_API', 'pyside6')
@@ -91,9 +114,18 @@ def serve_window(server, url, storage_path: Path):
                                    min_size=(960, 620), background_color="#11151c", text_select=True)
     allow_close = threading.Event()
     checking_close = threading.Lock()
+    cancelled = threading.Event()
+    tearing_down = threading.Event()
+    loaded = threading.Event()
+    startup_failure = []
 
     def closing():
         if allow_close.is_set():
+            return True
+        if not loaded.is_set() and getattr(server.app, 'export_job', {}).get('status') != 'running':
+            # A failed initialization has no usable JS bridge. Do not trap the
+            # user in its black window by evaluating JavaScript before closing.
+            allow_close.set()
             return True
         if not checking_close.acquire(blocking=False):
             return False
@@ -119,11 +151,14 @@ def serve_window(server, url, storage_path: Path):
         return False
 
     def closed():
+        if tearing_down.is_set():
+            return  # A failed renderer must not later shut down its fallback.
         server.runtime.stopped.set()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     window.events.closing += closing
     window.events.closed += closed
+    window.events.loaded += loaded.set
     worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
     worker.start()
 
@@ -134,11 +169,25 @@ def serve_window(server, url, storage_path: Path):
         except Exception:
             pass
     threading.Thread(target=watch_service, daemon=True).start()
+    def recover_blank_window():
+        startup_failure.append('独立窗口 25 秒内未完成页面加载，已退出黑屏窗口并切换现代浏览器；原进度保留')
+        tearing_down.set()
+        allow_close.set()  # Don't evaluate JS in the broken renderer to close it.
+        window.destroy()
+    if sys.platform == 'win32':
+        threading.Thread(target=watch_native_startup, args=(server.runtime, loaded, cancelled, recover_blank_window), daemon=True).start()
     try:
         gui = 'qt' if sys.platform.startswith('linux') else ('edgechromium' if sys.platform == 'win32' else None)
         webview.start(gui=gui, private_mode=False, storage_path=str(storage_path))
+    except BaseException:
+        tearing_down.set()
+        raise
     finally:
-        server.runtime.stopped.set()
+        cancelled.set()
+        if not tearing_down.is_set():
+            server.runtime.stopped.set()
         if worker.is_alive():
             server.shutdown()
         worker.join(5)
+    if startup_failure:
+        raise RuntimeError(startup_failure[0])

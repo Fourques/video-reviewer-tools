@@ -53,6 +53,7 @@ class AppRuntime:
         self.closed_pages = set()
         self.last_empty = time.monotonic()
         self.seen_page = False
+        self.desktop_issue = ''
         self.last_empty_explicit = False
         self.progress = {"status": "idle", "stage": "等待选择项目", "done": 0, "total": None, "message": ""}
 
@@ -138,7 +139,7 @@ class RuntimeHandlerMixin:
             return True
         if route.path == "/api/runtime":
             with runtime.lock if runtime else threading.RLock():
-                self.runtime_json({"autoClose": bool(runtime and runtime.auto_close), 'connectedPages': len(runtime.sessions) if runtime else 0, 'lastCloseExplicit': bool(runtime and runtime.last_empty_explicit)})
+                self.runtime_json({"autoClose": bool(runtime and runtime.auto_close), 'connectedPages': len(runtime.sessions) if runtime else 0, 'lastCloseExplicit': bool(runtime and runtime.last_empty_explicit), 'desktopIssue': runtime.desktop_issue if runtime else ''})
             return True
         if route.path == "/api/startup-status":
             self.runtime_json(runtime.snapshot() if runtime else {"status": "ready"})

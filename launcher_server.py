@@ -270,10 +270,19 @@ def run_launcher(
     safe_log(f"项目选择页面：{url}")
     safe_log("请选择项目、审核功能和输出位置。按 Ctrl+C 可退出。")
     browser_timer = None
+    browser_failed = threading.Event()
     if open_browser:
         def open_if_running():
             if not server.runtime.stopped.is_set():
-                webbrowser.open(url, new=2)
+                from desktop_window import open_review_browser, notify_browser_failure
+                try:
+                    open_review_browser(url)
+                except RuntimeError as exc:
+                    browser_failed.set()
+                    safe_log(str(exc))
+                    notify_browser_failure(str(exc))
+                    server.runtime.stopped.set()
+                    server.shutdown()
         browser_timer = threading.Timer(0.4, open_if_running)
         browser_timer.daemon = True
         browser_timer.start()
@@ -295,6 +304,7 @@ def run_launcher(
         # In particular Windows may lack its system WebView2 runtime. Do not
         # silently open the obsolete IE renderer or leave a blank application.
         safe_log(f'独立窗口组件不可用，改用系统浏览器：{exc}')
+        server.runtime.desktop_issue = str(exc)
         server.runtime.stopped.clear()
         server.runtime.watch(server)
         from desktop_window import open_review_browser, notify_browser_failure
@@ -315,3 +325,4 @@ def run_launcher(
         close = getattr(server.app, "close", None)
         if close:
             close()
+    return False if browser_failed.is_set() else None

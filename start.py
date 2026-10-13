@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caregiver-fall-output", help="护工 Fall 视频输出目录；默认是项目目录/caregiver_fall_output")
     parser.add_argument("--no-gui", action="store_true", help="使用终端输入路径，不显示项目选择窗口")
     parser.add_argument("--no-browser", action="store_true", help="启动后不自动打开浏览器")
-    parser.add_argument("--desktop", action="store_true", help="在独立应用窗口打开，需要桌面组件")
+    parser.add_argument("--desktop", action="store_true", help="使用可选独立窗口（Windows 默认用现代浏览器，独立窗口需要 WebView2）")
     parser.add_argument("--browser", action="store_true", help="使用默认浏览器，免安装版也不创建独立窗口")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机；局域网共享可用 0.0.0.0")
     parser.add_argument("--port", type=int, help="网页端口；不提供时从 8765 开始自动选择空闲端口")
@@ -203,7 +203,8 @@ def main() -> int:
     # --no-browser controls opening a browser, not keeping a service alive.
     auto_close = not args.keep_running
     from desktop_window import available as desktop_available
-    desktop = not (args.no_browser or args.browser or remote_session) and (args.desktop or bool(getattr(sys, 'frozen', False))) and desktop_available()
+    packaged_native = bool(getattr(sys, 'frozen', False)) and sys.platform != 'win32'
+    desktop = not (args.no_browser or args.browser or remote_session) and (args.desktop or packaged_native) and desktop_available()
     selection = None
     if args.source:
         source = clean_path(args.source).resolve()

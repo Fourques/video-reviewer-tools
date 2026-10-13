@@ -4,7 +4,7 @@
 
 ## 开始使用
 
-从 [GitHub Releases](https://github.com/Fourques/video-reviewer-tools/releases) 下载与电脑匹配的免安装包，完整解压后双击 `VideoReviewer.exe`（Windows）、`VideoReviewer.app`（macOS）或 `VideoReviewer`（Linux）。包内含 Python、FFmpeg 和网页资源，无需手工配置。未签名应用可能触发系统安全提示：确认来源后按系统提供的“仍要运行”/Control 点按“打开”操作。
+从 [GitHub Releases](https://github.com/Fourques/video-reviewer-tools/releases) 下载与电脑匹配的免安装包，完整解压后双击 `VideoReviewer.exe`（Windows）、`VideoReviewer.app`（macOS）或 `VideoReviewer`（Linux）。包内含 Python、FFmpeg 和网页资源，无需手工配置。Windows 默认启动一个已安装的现代浏览器窗口，不依赖 WebView2；关闭审核页后自动释放服务。未签名应用可能触发系统安全提示：确认来源后按系统提供的“仍要运行”/Control 点按“打开”操作。
 
 在项目中心选择一个视频目录，选择新项目模板，然后开始：
 
@@ -60,7 +60,9 @@ CSV 很大时，可在启动页点“本次跳过 CSV，先审核视频”。只
 
 ## 进度、恢复与旧版本升级
 
-### Windows 页面错位、颜色异常或按钮无效（2.0.11）
+### Windows 页面错位、纯黑窗口或按钮无效（2.0.12）
+
+如果网页模式能正常使用、独立窗口纯黑，故障在独立窗口初始化/渲染这一层，不能仅凭截图断定具体是 GPU、缓存还是组件错误。新版 Windows 双击默认使用现代浏览器模式，绕开该依赖；有 WebView2 且需要独立窗口的用户可显式运行 `VideoReviewer.exe --desktop`。可选独立窗口 25 秒内既未完成页面加载、也未建立页面连接时，会退出黑屏窗口并改用浏览器；慢目录检索和已建立连接的页面不被误关闭。未初始化窗口可以正常关闭，不再等待不存在的 JS 桥接。
 
 旧 IE/MSHTML 内核不支持当前界面的 CSS 变量、布局和 JavaScript。窗口组件即使指定 Edge，也可能在 WebView2 / .NET 不可用时静默降级。新版在创建窗口前检查实际内核，禁止 IE 降级；独立窗口无法使用时，只启动已安装的 Edge / Chrome / Firefox，不走可能指向 IE 的默认浏览器关联。不自动下载安装组件。
 
@@ -118,9 +120,9 @@ Windows 本地盘及 UNC 网络盘统一使用原生扩展路径访问视频；�
 
 ## 退出、更新与远程使用
 
-免安装版本机以独立窗口打开，关闭窗口结束服务并释放端口；有未保存记录或整理任务时会阻止误退出。源码浏览器版 / 远程版关闭最后一页后约 8–12 秒退出，刷新不算结束。临时休眠 / 断网不会立即杀掉审核；异常页面消失且没送达关闭通知时最迟 24 小时退出。顶栏“退出工具”可明确停止。只有 `--keep-running` 长期运行；`--no-browser` 不会让服务常驻。
+Windows 免安装版默认打开一个现代浏览器窗口；macOS / Linux 默认独立窗口。独立窗口关闭后结束服务，未保存记录或整理任务会阻止误退出；浏览器模式 / 远程版关闭最后一页后约 8–12 秒退出，刷新不算结束。临时休眠 / 断网不会立即杀掉审核；异常页面消失且没送达关闭通知时最迟 24 小时退出。顶栏“退出工具”可明确停止。只有 `--keep-running` 长期运行；`--no-browser` 不会让服务常驻。
 
-更新：退出旧工具，完整解压新版，重新选择原数据项目即可。不要混用新旧包内的文件。Windows 需要系统可用的 WebView2；启动组件不可用时可使用 `--browser` 打开系统浏览器。Linux 原生包面向现代 x64 桌面环境（glibc 2.34+），无图形桌面的服务器用远程模式。源代码不依赖桌面组件。
+更新：退出旧工具，完整解压新版，重新选择原数据项目即可。不要混用新旧包内的文件。Windows 默认浏览器模式无需 WebView2；可选 `--desktop` 独立窗口需要系统可用的 WebView2，也可用 `--browser` 显式绕开独立窗口。Linux 原生包面向现代 x64 桌面环境（glibc 2.34+），无图形桌面的服务器用远程模式。源代码不依赖桌面组件。
 
 源码需 Python 3.10+ 和 FFmpeg（无需独立 FFprobe）：
 

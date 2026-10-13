@@ -9,10 +9,58 @@ from unittest.mock import Mock, patch
 from urllib.request import ProxyHandler, build_opener, Request
 
 import desktop_window
+from app_runtime import AppRuntime
+import start
 from launcher_server import run_launcher
 
 
 class DesktopCompatibilityTests(unittest.TestCase):
+    def test_windows_defaults_to_browser_but_native_is_explicitly_available(self):
+        for args, expected in (([], False), (['--desktop'], True), (['--desktop', '--browser'], False)):
+            with self.subTest(args=args), patch.object(start.sys, 'platform', 'win32'), \
+                 patch.object(start.sys, 'frozen', True, create=True), \
+                 patch.object(start.sys, 'argv', ['start.py', '--port', '8879', *args]), \
+                 patch.dict(start.os.environ, {}, clear=True), \
+                 patch.object(desktop_window, 'available', return_value=True), \
+                 patch.object(start, 'load_settings', return_value={}), \
+                 patch.object(start.reviewer, 'stop_background_commands'), \
+                 patch.object(start, 'run_launcher') as run:
+                self.assertEqual(start.main(), 0)
+                self.assertEqual(run.call_args.kwargs['desktop'], expected)
+                self.assertEqual(run.call_args.kwargs['open_browser'], not expected)
+
+    def test_browser_preference_respects_modern_default_and_ignores_ie(self):
+        class Key:
+            def __init__(self, path): self.path = path
+            def __enter__(self): return self.path
+            def __exit__(self, *args): pass
+        for association, first in (('ChromeHTML', 'chrome.exe'), ('FirefoxURL', 'firefox.exe'), ('IE.HTTP', 'msedge.exe')):
+            with self.subTest(association=association):
+                def query(path, name):
+                    return (association if name == 'ProgId' else '/browser/' + path.rsplit('\\', 1)[-1], 1)
+                registry = SimpleNamespace(HKEY_CURRENT_USER=1, HKEY_LOCAL_MACHINE=2, KEY_READ=1, KEY_WOW64_64KEY=2, KEY_WOW64_32KEY=4,
+                                           OpenKey=lambda hive, path, *args: Key(path), QueryValueEx=query)
+                with patch.dict(sys.modules, {'winreg': registry}), patch.dict(desktop_window.os.environ, {}, clear=True), patch.object(Path, 'is_file', return_value=True):
+                    browsers = list(desktop_window.modern_windows_browsers())
+                self.assertEqual(browsers[0].name, first)
+                self.assertEqual(len(browsers), 3)
+
+    def test_blank_native_startup_recovers_but_never_closes_active_or_closed_page(self):
+        runtime = AppRuntime()
+        loaded, cancelled, recover = threading.Event(), threading.Event(), Mock()
+        desktop_window.watch_native_startup(runtime, loaded, cancelled, recover, timeout=.001)
+        recover.assert_called_once()
+        for condition in ('loaded', 'cancelled', 'stopped', 'session'):
+            with self.subTest(condition=condition):
+                runtime = AppRuntime()
+                loaded, cancelled, recover = threading.Event(), threading.Event(), Mock()
+                if condition == 'loaded': loaded.set()
+                if condition == 'cancelled': cancelled.set()
+                if condition == 'stopped': runtime.stopped.set()
+                if condition == 'session': runtime.enter('review')
+                desktop_window.watch_native_startup(runtime, loaded, cancelled, recover, timeout=.001)
+                recover.assert_not_called()
+
     def backend(self, renderer):
         return patch.dict(sys.modules, {'webview': SimpleNamespace(), 'webview.guilib': SimpleNamespace(initialize=Mock(return_value=SimpleNamespace(renderer=renderer)))})
 
