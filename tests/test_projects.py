@@ -50,6 +50,37 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(app.public_videos()[0]["annotation"]["label"], "different")
         self.assertEqual(app.config["labels"][0]["name"], "搀扶")
 
+    def test_workspace_restores_filters_and_cursor_without_changing_annotations(self):
+        app = self.app()
+        video = app.videos[1]
+        self.save(app, video, label='no_fall', status='done')
+        annotations = json.loads(json.dumps(app.state['annotations']))
+        history = json.loads(json.dumps(app.state['history']))
+        workspace = {'projectId': app.config['id'], 'round': app.state['round'],
+            'id': video.id, 'updatedAt': 200, 'filters': {'search': 'two', 'label': 'no_fall', 'status': 'all', 'sort': 'filename'}}
+        app.save_cursor({'id': video.id, 'workspace': workspace})
+        old = {**workspace, 'id': app.videos[0].id, 'updatedAt': 100}
+        self.assertTrue(app.save_cursor({'id': old['id'], 'workspace': old})['stale'])
+        self.assertEqual(app.state['cursor'], video.id)
+        app.close();self.apps.remove(app)
+        restored = self.app()
+        self.assertEqual(restored.document()['workspace'], workspace)
+        self.assertEqual(restored.state['annotations'], annotations)
+        self.assertEqual(restored.state['history'], history)
+        self.assertEqual(restored.document()['cursor'], video.id)
+
+    def test_workspace_rejects_wrong_project_round_and_filters(self):
+        app = self.app()
+        identity = app.videos[0].id
+        workspace = {'projectId': app.config['id'], 'round': app.state['round'], 'id': identity,
+            'updatedAt': 100, 'filters': {'search': '', 'label': '', 'status': 'all', 'sort': 'filename'}}
+        for change in ({'projectId': 'other'}, {'round': 99}, {'id': 'other'}, {'updatedAt': False}, {'filters': {'search': '', 'label': 'missing', 'status': 'all', 'sort': 'filename'}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                app.save_cursor({'id': identity, 'workspace': {**workspace, **change}})
+        self.assertNotIn('workspace', app.state)
+        app.save_cursor({'id': identity})  # Existing clients remain supported.
+        self.assertEqual(app.state['cursor'], identity)
+
     def test_used_label_cannot_be_deleted(self):
         app = self.app()
         self.save(app, label="fall", status="done")
@@ -81,6 +112,44 @@ class ProjectTests(unittest.TestCase):
         payload["token"] = "different"
         with self.assertRaises(ConflictError):
             app.save_annotation(payload)
+
+    def test_live_changes_include_remote_edits_and_undo(self):
+        app = self.app()
+        document = app.document()
+        def poll(after):
+            return app.live_snapshot(after, document['liveInstance'], app.config.get('revision', 0), document['round'])
+        self.assertFalse(poll(document['seq'])['reset'])
+        self.assertEqual(poll(document['seq'])['changes'], [])
+        self.save(app, label='fall', status='done')
+        first = poll(document['seq'])
+        self.assertEqual(first['counts']['done'], 1)
+        self.assertEqual(first['labels'], {'fall': 1})
+        self.assertEqual(len(first['changes']), 1)
+        self.assertEqual(first['changes'][0]['annotation']['label'], 'fall')
+        # Cursor updates must not advance a browser's separate delta cursor.
+        app.store.commit({'cursor': app.videos[1].id})
+        self.assertEqual(len(poll(document['seq'])['changes']), 1)
+        self.assertEqual(poll(first['seq'])['changes'], [])
+        app.undo()
+        undone = poll(first['seq'])
+        self.assertEqual(undone['changes'][0]['annotation']['label'], None)
+        self.assertEqual(undone['counts']['pending'], 2)
+
+    def test_live_reset_for_rescan_new_round_and_instance(self):
+        app = self.app()
+        doc = app.document()
+        arguments = [doc['seq'], doc['liveInstance'], app.config.get('revision', 0), doc['round']]
+        self.assertFalse(app.live_snapshot(*arguments)['reset'])
+        self.assertTrue(app.live_snapshot(doc['seq'], 'old-instance', arguments[2], arguments[3])['reset'])
+        self.assertTrue(app.live_snapshot(doc['seq'], arguments[1], -1, arguments[3])['reset'])
+        app.scan()
+        self.assertTrue(app.live_snapshot(*arguments)['reset'])
+        doc = app.document()
+        self.save(app, label='no_fall', status='done')
+        app.store.commit({'round': 2})
+        result = app.live_snapshot(doc['seq'], doc['liveInstance'], app.config.get('revision', 0), doc['round'])
+        self.assertTrue(result['reset'])
+        self.assertEqual(result['counts']['pending'], 2)
 
     def test_multiple_undo_keeps_older_history_usable(self):
         app = self.app()

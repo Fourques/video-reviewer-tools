@@ -73,7 +73,7 @@ def save_settings(selection: dict[str, str]) -> None:
     recent = [source] + [item for item in settings["recent_projects"] if item != source]
     settings["recent_projects"] = recent[:MAX_RECENT_PROJECTS]
     settings["last_mode"] = selection["mode"]
-    settings["projects"][source] = {key: value for key, value in selection.items() if key not in {"source", "projectConfig"}}
+    settings["projects"][source] = {key: value for key, value in selection.items() if key not in {"source", "projectConfig", "cameraRegions"}}
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
         temporary = SETTINGS_FILE.with_name(f".{SETTINGS_FILE.name}.{os.getpid()}.tmp")
@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="选择一个项目目录并启动视频人工审核工具（只扫描目录第一层）")
     parser.add_argument("--source", help="包含待审核视频的项目目录；不提供时打开浏览器项目中心")
     parser.add_argument("--mode", choices=("clip", "label", "project"), help="兼容旧参数：clip=区间模板；label=跌倒模板；project=通用项目")
-    parser.add_argument("--preset", choices=("fall", "clips", "custom"), help="新项目模板；已存在项目按保存规则恢复")
+    parser.add_argument("--preset", choices=("fall", "clips", "custom", "bathroom"), help="新项目模板；已存在项目按保存规则恢复")
     parser.add_argument("--output-root", help="新项目输出根目录；默认项目目录/output")
     parser.add_argument("--output", help="8 秒片段输出目录；默认是项目目录/output")
     parser.add_argument("--no-fall-output", help="全程无跌倒输出目录；默认是项目目录/no_fall_output")
@@ -153,7 +153,7 @@ def main() -> int:
             stream.reconfigure(errors="backslashreplace")
     args = parse_args()
     if args.self_test:
-        required = ["project_center.html", "workbench.html", "workbench.js", "workbench.css", "media.js", "app.js", "playback.js", "layout.css", "browser_guard.js"]
+        required = ["project_center.html", "workbench.html", "workbench.js", "workbench.css", "regions.js", "media.js", "app.js", "playback.js", "layout.css", "browser_guard.js"]
         missing = [name for name in required if not Path(__file__).with_name(name).is_file()]
         if missing:
             print(f"自检失败：缺少资源文件：{', '.join(missing)}", file=sys.stderr)
@@ -174,7 +174,7 @@ def main() -> int:
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            for route in ("/", "/assets/workbench.js", "/assets/workbench.css", "/assets/media.js", "/assets/app.js", "/assets/playback.js", "/assets/browser_guard.js", "/api/runtime"):
+            for route in ("/", "/assets/workbench.js", "/assets/workbench.css", "/assets/media.js", "/assets/regions.js", "/assets/app.js", "/assets/playback.js", "/assets/browser_guard.js", "/api/runtime"):
                 connection = HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                 try:
                     connection.request("GET", route)

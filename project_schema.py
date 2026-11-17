@@ -6,7 +6,7 @@ import math
 import re
 import uuid
 
-VERSION = "2.0.12"
+VERSION = "2.1.0"
 KEYS = {"play": "s", "loop": "w", "back": "a", "forward": "d", "stepBack": "arrowleft", "stepForward": "arrowright", "previous": "[", "next": "]", "addSegment": "space", "complete": "enter", "undo": "backspace", "review": "u"}
 KEYS.update({action: '' for action in ('settings', 'organize', 'search', 'rescan', 'proxy', 'proxyAll', 'fullscreen', 'mute', 'setStart', 'setEnd', 'previewSegment', 'saveView', 'switchProject', 'clearLabel', 'previousDevice', 'nextDevice')})
 
@@ -17,6 +17,12 @@ def preset(name="fall"):
         {"id": "no_fall", "name": "不跌倒", "description": "确认没有跌倒", "color": "#49b99e", "key": "k", "folder": "no_fall", "active": True},
         {"id": "caregiver_fall", "name": "护工 Fall", "description": "护工相关跌倒", "color": "#ad8cdd", "key": "l", "folder": "caregiver_fall", "active": True},
     ]
+    if name == "bathroom":
+        labels = [
+            {"id": "bathroom_entry", "name": "进入洗手间", "description": "人物进入洗手间区域", "color": "#49b99e", "key": "j", "folder": "bathroom_entry", "active": True},
+            {"id": "bathroom_exit", "name": "离开洗手间", "description": "人物离开洗手间区域", "color": "#65a8df", "key": "k", "folder": "bathroom_exit", "active": True},
+            {"id": "no_bathroom_event", "name": "无进出", "description": "没有明确的进入或离开动作", "color": "#8e98a7", "key": "l", "folder": "no_bathroom_event", "active": True},
+        ]
     if name == "clips":
         labels.extend([
             {"id": "scene_change", "name": "场景变化", "description": "明显场景切换", "color": "#e4b56a", "key": "", "folder": "scene_change", "active": True},
@@ -25,7 +31,7 @@ def preset(name="fall"):
         ])
     if name == "custom":
         labels = [{"id": "label_1", "name": "类别 1", "description": "", "color": "#78a9ef", "key": "j", "folder": "label_1", "active": True}]
-    return {"version": 2, "id": str(uuid.uuid4()), "name": "", "preset": name, "labels": labels, "tags": [], "intervals": name == "clips", "segmentSeconds": 8, "freeSegments": False, "exportMode": "copy" if name == "clips" else ("labels" if name == "custom" else "move"), "output": "output", "clipOutput": "output/clips", "clipFlat": True, "wholeLabels": ["no_fall"] if name == "clips" else [], "negativeLabels": ["no_fall"] if name != "custom" else [], "destinations": {}, "inputs": [], "shortcuts": copy.deepcopy(KEYS), "seekSeconds": 1, "quickSubmit": name != "clips", "snapKeyframes": True, "metadataConfig": {}}
+    return {"version": 2, "id": str(uuid.uuid4()), "name": "", "preset": name, "labels": labels, "tags": [], "intervals": name == "clips", "segmentSeconds": 8, "freeSegments": False, "exportMode": "copy" if name == "clips" else ("labels" if name in {"custom", "bathroom"} else "move"), "output": "output", "clipOutput": "output/clips", "clipFlat": True, "wholeLabels": ["no_fall"] if name == "clips" else [], "negativeLabels": ["no_fall"] if name not in {"custom", "bathroom"} else (["no_bathroom_event"] if name == "bathroom" else []), "destinations": {}, "inputs": [], "shortcuts": copy.deepcopy(KEYS), "seekSeconds": 1, "quickSubmit": name != "clips", "snapKeyframes": True, "metadataConfig": {}}
 
 
 def validate(config, previous=None, used=None):

@@ -4,3 +4,37 @@
 @media(max-width:720px){.shell{min-width:600px}.queue{display:none}.workbench{grid-template-columns:0 0 minmax(320px,1fr)}.resize-handle{display:none}.progress-group{display:none}.appbar .project-button{margin-right:auto}.form-grid{grid-template-columns:1fr}.label-table-head,.label-edit-row{grid-template-columns:24px 35px minmax(100px,1fr) 45px 85px 30px}.dialog-header,.dialog-footer,.dialog-body{padding:12px}.tabs{padding-left:12px}}
 .error-list,.export-run,.compact-dialog .dialog-body{overflow-wrap:anywhere;word-break:break-word;min-width:0}.error-list{overflow-x:hidden}.export-counts{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.export-run{border:1px solid var(--line);border-radius:8px;padding:13px;margin:10px 0}.export-run summary{cursor:pointer;font-size:12px;color:var(--danger)}#exportHistoryDialog .dialog-body{min-height:150px}#exportPhase{font-variant-numeric:tabular-nums}#exportDialog .dialog-footer{flex-wrap:wrap}#exportDialog .dialog-footer>.muted{flex:1;min-width:150px}@media(max-width:1200px){#organizeHistory{padding:7px;font-size:12px}}
 .shell{height:100vh;height:100dvh} /* viewport fallback for older WebView2 */
+
+/* Long AI reasons stay readable without changing annotation/save behavior. */
+.browse-status{display:flex;justify-content:space-between;gap:10px;flex:none;padding:5px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted);min-width:0}
+.browse-status #browsePosition{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browse-status #browseSaved{flex:none;font-size:11px}
+.annotation-panel #note {
+  display:block;
+  height:clamp(180px,30vh,340px);
+  min-height:160px;
+  max-height:60vh;
+  flex:0 0 auto;
+  resize:vertical;
+  overflow:auto;
+  overflow-wrap:anywhere;
+  white-space:pre-wrap;
+  font-size:13px;
+  line-height:1.65;
+  scrollbar-gutter:stable;
+}
+@media(min-width:981px) {
+  .workbench{grid-template-columns:var(--side) 5px minmax(320px,1fr) clamp(260px,23vw,340px)}
+  .queue-hidden .workbench{grid-template-columns:0 0 minmax(320px,1fr) clamp(260px,23vw,340px)}
+}
+@media(max-width:980px) {
+  .annotation-panel{max-height:42vh}
+  .annotation-panel #note {
+    height:140px;
+    min-height:120px;
+    max-height:45vh;
+    margin-top:9px;
+  }
+}
+
+.region-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;padding:6px 0}.region-tools label{cursor:pointer}.region-tools .file-button{color:#9ecbff}#cameraRegionOverlay{position:absolute;pointer-events:none;z-index:3;overflow:hidden}#cameraRegionOverlay[hidden]{display:none}#cameraRegionOverlay polygon{fill:#38bdf824;stroke:#38bdf8;stroke-width:2;vector-effect:non-scaling-stroke}

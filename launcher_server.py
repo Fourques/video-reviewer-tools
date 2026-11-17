@@ -52,6 +52,8 @@ class LauncherApp:
         html_path: Path,
         save_selection: Callable[[dict[str, str]], None],
     ) -> None:
+        from rule_templates import RuleTemplates
+        self.rule_templates = RuleTemplates()
         self.settings = settings
         self.html = html_path.read_bytes()
         self.save_selection = save_selection
@@ -98,12 +100,16 @@ class LauncherApp:
             raise ValueError("请选择审核功能")
         if mode == "project":
             selected_preset = payload.get("preset", "fall")
-            if selected_preset not in {"fall", "clips", "custom"}:
+            if selected_preset not in {"fall", "clips", "custom", "bathroom"}:
                 raise ValueError("项目模板无效")
             result = {"source": str(source), "mode": "project", "preset": selected_preset,
                       "output_root": str(payload.get("output_root", "")).strip()}
             if isinstance(payload.get("projectConfig"), dict):
-                result["projectConfig"] = payload["projectConfig"]
+                from rule_templates import portable_rules
+                result["projectConfig"] = portable_rules(payload["projectConfig"])
+            if "cameraRegions" in payload:
+                from camera_regions import validate_regions
+                result["cameraRegions"] = validate_regions(payload["cameraRegions"])
             return result
 
         def output_path(key: str, default_name: str) -> Path:
@@ -200,6 +206,9 @@ class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/api/rule-templates":
+            self._json(self.server.launcher_app.rule_templates.read())
+            return
         if parsed.path == "/api/config":
             self._json(self.server.launcher_app.config())
             return
@@ -232,12 +241,22 @@ class LauncherHandler(RuntimeHandlerMixin, BaseHTTPRequestHandler):
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
-        if route != "/api/start":
+        if route not in {"/api/start", "/api/rule-templates"}:
             self._json({"error": "Not Found"}, HTTPStatus.NOT_FOUND)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > 1_000_000:
+                raise ValueError("请求数据过大")
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if route == "/api/rule-templates":
+                if not isinstance(payload, dict):
+                    raise ValueError("请求必须是对象")
+                origin = self.headers.get("Origin")
+                if origin and urlparse(origin).netloc != self.headers.get("Host"):
+                    raise ValueError("不允许跨站保存配置")
+                self._json(self.server.launcher_app.rule_templates.save(payload))
+                return
             if not isinstance(payload, dict) or not isinstance(payload.get('source'), str) or not payload['source'].strip():
                 raise ValueError('请选择项目目录')
             # Accept immediately; all realpath/is_dir/network work belongs to

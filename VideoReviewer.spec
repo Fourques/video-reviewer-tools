@@ -33,6 +33,7 @@ app_datas = [
     ("layout.css", "."),
     ("workbench.html", "."),
     ("workbench.js", "."),
+    ("regions.js", "."),
     ("workbench.css", "."),
     ("media.js", "."),
     ("THIRD_PARTY_NOTICES.md", "."),
@@ -87,7 +88,7 @@ if sys.platform == "darwin":
         name="VideoReviewer.app",
         icon=None,
         bundle_identifier="com.fourques.video-reviewer",
-        version="2.0.12",
+        version="2.1.0",
         info_plist={
             "CFBundleDisplayName": "视频人工审核工具",
             "NSHighResolutionCapable": True,

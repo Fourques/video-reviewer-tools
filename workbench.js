@@ -31,6 +31,41 @@ function notice(message, persistent=false) {
 function labelName(id) {return state.config?.labels.find(item=>item.id===id)?.name || id || '未标注';}
 function labelColor(id) {return state.config?.labels.find(item=>item.id===id)?.color || '#8291a5';}
 function projectKey(suffix) {return `videoReviewer.v2.${state.config.id}.${suffix}`;}
+// WORKSPACE_RESUME_BEGIN — pure selection logic, covered by node tests.
+function chooseWorkspace(project, local) {
+  const labels=new Set(['',...project.config.labels.map(label=>label.id)]);
+  const ids=new Set(project.videos.map(video=>video.id));
+  return [local,project.workspace].filter(value=>value&&value.projectId===project.config.id&&value.round===project.round&&ids.has(value.id)&&
+    Number.isSafeInteger(value.updatedAt)&&value.updatedAt>0&&value.filters&&typeof value.filters.search==='string'&&value.filters.search.length<=2000&&
+    ['all','pending','review','done'].includes(value.filters.status)&&labels.has(value.filters.label)&&['filename','device'].includes(value.filters.sort))
+    .sort((a,b)=>b.updatedAt-a.updatedAt)[0]||null;
+}
+// WORKSPACE_RESUME_END
+function currentFilters() {return {search:$('search').value,status:$('statusFilter').value,label:$('labelFilter').value,sort:$('sort').value};}
+function applyFilters(filters) {for(const [key,id] of [['search','search'],['status','statusFilter'],['label','labelFilter'],['sort','sort']])$(id).value=filters[key];}
+async function saveBrowseRemote(workspace, keepalive=false) {
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try {
+    await api('/api/cursor',{method:'POST',body:{id:workspace.id,workspace},signal:controller.signal,keepalive});
+    if(state.workspace?.updatedAt===workspace.updatedAt){state.workspaceUnsynced=false;$('browseSaved').textContent='浏览断点已保存';}
+  } catch {
+    if(state.workspace?.updatedAt===workspace.updatedAt){state.workspaceUnsynced=true;$('browseSaved').textContent=state.workspaceLocal?'本机已记住 · 等待服务连接':'断点未保存，请保持页面';}
+  } finally {clearTimeout(timer);}
+}
+function rememberWorkspace() {
+  if(!state.config||!state.current)return;
+  const workspace={projectId:state.config.id,round:state.document.round,id:state.current.id,filters:currentFilters(),updatedAt:Math.max(Date.now(),(state.workspace?.updatedAt||0)+1)};
+  state.workspace=workspace;state.workspaceUnsynced=true;state.workspaceLocal=false;
+  try {localStorage.setItem(projectKey('workspace'),JSON.stringify(workspace));state.workspaceLocal=true;}catch{}
+  $('browseSaved').textContent=state.workspaceLocal?'本机已记住 · 正在同步':'正在保存浏览断点';
+  clearTimeout(cursorTimer);cursorTimer=setTimeout(()=>saveBrowseRemote(workspace),600);
+}
+function renderBrowsePosition(list) {
+  if(!state.current)return;
+  const index=list.findIndex(video=>video.id===state.current.id),filter=$('labelFilter').value;
+  $('position').textContent=`全库 ${state.videos.indexOf(state.current)+1} / ${state.videos.length}`;
+  $('browsePosition').textContent=`${filter?labelName(filter):'全部标签'} · 复筛位置 ${index<0?'当前在筛选外':`${index+1} / ${list.length}`}`;
+}
 function effectiveKeys() {
   return {shortcuts:{...state.config.shortcuts,...state.personal.shortcuts},labels:Object.fromEntries(state.config.labels.filter(item=>item.active).map(item=>[item.id,state.personal.labels?.[item.id]??item.key])),seekSeconds:state.personal.seekSeconds??state.config.seekSeconds};
 }
@@ -122,6 +157,7 @@ function renderProgress() {
   const review=state.videos.filter(video=>video.annotation.status==='review').length;
   const pending=state.videos.length-done-review;
   $('progressText').textContent=`${done} / ${state.videos.length} 完成 · ${review} 待复核 · ${pending} 未审`;
+  $('liveState').textContent=`已审 ${done+review}/${state.videos.length}`;
   $('reviewProgress').value=state.videos.length?100*done/state.videos.length:0;
 }
 function renderList(scrollToCurrent=false) {
@@ -136,6 +172,7 @@ function renderList(scrollToCurrent=false) {
   for(const row of rows) {state.rowOffsets.push(height);height+=row.group?28:76;}
   state.listHeight=height;
   $('queueCount').textContent=`${list.length} 条`;
+  renderBrowsePosition(list);
   $('deviceSummary').textContent=`${new Set(state.videos.map(device).filter(Boolean)).size} 个设备 · 第一层视频`;
   if(scrollToCurrent&&state.current) {
     const index=rows.findIndex(row=>row.video?.id===state.current.id);
@@ -168,13 +205,14 @@ let cursorTimer;
 function selectVideo(id) {
   const video=state.videos.find(item=>item.id===id);if(!video)return;
   state.current=video;state.info=null;state.draftId=null;
+  window.cameraRegions?.select(video);
   $('videoName').textContent=video.name;$('videoName').title=video.name;
   $('videoDetails').textContent=[device(video)&&`设备 ${device(video)}`,video.relative].filter(Boolean).join(' · ');$('videoDetails').title=video.relative;
   $('segmentStart').value=0;$('segmentEnd').value=state.config.segmentSeconds;
   renderMetadata();renderAnnotation();renderList(true);
+  rememberWorkspace(); // Save locally before a media/network failure can interrupt navigation.
   deck.select(id,nextVideo(1)?.id);
   state.infoPromise=state.config.intervals?api(`/api/video-info?id=${encodeURIComponent(id)}`).then(info=>{if(state.current?.id===id){state.info=info;updateDraft();}return info;}).catch(error=>{if(state.current?.id===id)notice(`无法读取原视频区间信息：${error.message}`);return null;}):null;
-  clearTimeout(cursorTimer);cursorTimer=setTimeout(()=>post('/api/cursor',{id}).catch(()=>{}),600);
 }
 function renderMetadata() {
   const video=state.current;if(!video)return;
@@ -197,7 +235,6 @@ function renderAnnotation() {
   $('segmentSection').hidden=!state.config.intervals;$('intervalTools').hidden=!state.config.intervals;
   $('segmentCount').textContent=a.segments.length;
   $('segmentList').innerHTML=a.segments.length?a.segments.map(item=>`<div class="segment-card"><span style="color:${labelColor(item.label)}">${escapeText(labelName(item.label))}</span> · ${time(item.start)}–${time(item.end)}<div class="row"><button data-preview="${item.id}">预览</button><button data-edit="${item.id}">编辑</button><button data-remove="${item.id}">删除</button></div></div>`).join(''):'<p class="hint">Space 添加当前区间</p>';
-  $('position').textContent=`${state.videos.indexOf(state.current)+1} / ${state.videos.length}`;
   $('segmentEnd').readOnly=!state.config.freeSegments;
   renderTimeline();
 }
@@ -259,7 +296,7 @@ $('retryPreview').onclick=()=>deck.proxy(deck.slot,true);
 let proxyAllTimer;
 $('proxyAll').onclick=async()=>{try{await post('/api/proxy-all');$('proxyAll').disabled=true;const poll=async()=>{try{const job=await api('/api/proxy-all-status');$('proxyAllStatus').textContent=`${job.done||0}/${job.total||0} · 成功 ${job.ready||0} · 失败 ${job.failed||0}`;if(job.status==='running')proxyAllTimer=setTimeout(poll,1000);else{$('proxyAll').disabled=false;$('proxyAllStatus').textContent=job.message;}}catch(error){$('proxyAllStatus').textContent=error.message;$('proxyAll').disabled=false;}};clearTimeout(proxyAllTimer);poll();}catch(error){notice(error.message);}};
 $('fullscreen').onclick=()=>{$('videoStage').requestFullscreen?.().catch(()=>notice('此浏览器暂不支持全屏'));};
-for(const id of ['search','statusFilter','labelFilter','sort'])$(id).addEventListener(id==='search'?'input':'change',()=>{renderList(true);deck.warm(nextVideo(1)?.id);});
+for(const id of ['search','statusFilter','labelFilter','sort'])$(id).addEventListener(id==='search'?'input':'change',()=>{renderList(true);rememberWorkspace();deck.warm(nextVideo(1)?.id);});
 $('labelSearch').oninput=renderAnnotation;
 $('collapseList').onclick=()=>{document.body.classList.toggle('queue-hidden');try{localStorage.setItem('videoReviewer.v2.queueHidden',document.body.classList.contains('queue-hidden'));}catch{}};
 try{document.body.classList.toggle('queue-hidden',localStorage.getItem('videoReviewer.v2.queueHidden')==='true');const width=Number(localStorage.getItem('videoReviewer.v2.queueWidth'));if(width>=200&&width<=420)document.documentElement.style.setProperty('--side',width+'px');}catch{}
@@ -268,6 +305,7 @@ $('resizeHandle').onkeydown=event=>{if(!['ArrowLeft','ArrowRight'].includes(even
 function adopt(document, keepCurrent=true) {
   const id=keepCurrent?state.current?.id:null;
   state.config=document.config;state.videos=document.videos;state.seq=Math.max(state.seq,document.seq);state.document=document;
+  state.liveSeq=document.seq;state.liveInstance=document.liveInstance;
   try{state.personal=JSON.parse(localStorage.getItem(projectKey('keys'))||'{}');validKeys(effectiveKeys());}catch{state.personal={};}
   $('projectName').textContent=state.config.name;$('projectName').title=document.source;
   const selected=$('labelFilter').value;
@@ -277,8 +315,10 @@ function adopt(document, keepCurrent=true) {
   $('views').innerHTML='<option value="">已保存视图…</option>'+document.views.map((view,index)=>`<option value="${index}">${escapeText(view.name)}</option>`).join('');
   $('back').textContent=`−${effectiveKeys().seekSeconds}s`;$('forward').textContent=`+${effectiveKeys().seekSeconds}s`;
   $('shortcutHelp').innerHTML=Object.entries(effectiveKeys().shortcuts).filter(([,key])=>key).map(([action,key])=>`<span><kbd>${keyName(key)}</kbd> ${escapeText(ACTIONS[action]||action)}</span>`).join('');
+  let resume=null;
+  if(!keepCurrent){let local;try{local=JSON.parse(localStorage.getItem(projectKey('workspace'))||'null');}catch{}resume=chooseWorkspace(document,local);if(resume){applyFilters(resume.filters);state.workspace=resume;}}
   renderProgress();
-  const current=state.videos.find(item=>item.id===(id||document.cursor))||state.videos.find(item=>item.annotation.status==='pending')||state.videos[0];
+  const current=state.videos.find(item=>item.id===(id||resume?.id||document.cursor))||state.videos.find(item=>item.annotation.status==='pending')||state.videos[0];
   if(current)selectVideo(current.id);else{$('mediaOverlay').textContent='当前目录没有视频，可在项目设置添加输入目录';renderList();}
   if(document.warning)notice(document.warning,true);
   else if(document.inputWarnings?.length)notice(document.inputWarnings.join('；'),true);
@@ -286,9 +326,52 @@ function adopt(document, keepCurrent=true) {
   else if(document.missing.length)notice(`有 ${document.missing.length} 个已记录视频不在当前目录中；标注保留。请检查挂载或额外输入目录。`,true);
 }
 async function refresh() {await flush();adopt(await api('/api/project'));}
+
+// LIVE_MERGE_BEGIN — also exercised without a browser in tests/live-sync.test.cjs.
+function mergeLiveAnnotations(videos, changes, protectedIds=new Set()) {
+  const byId=new Map(videos.map(video=>[video.id,video]));let changed=false;
+  for(const item of changes) {
+    const video=byId.get(item.id);
+    if(!video||protectedIds.has(item.id)||item.annotation.revision<=video.annotation.revision)continue;
+    video.annotation=item.annotation;video.label=item.annotation.label;changed=true;
+  }
+  return changed;
+}
+// LIVE_MERGE_END
+let liveTimer;
+function liveBusy() {
+  return state.pending.length||state.draining||state.failed||state.exportRunning||document.querySelector('dialog[open]')||
+    (document.activeElement===$('note')&&state.current&&$('note').value!==state.current.annotation.note);
+}
+async function pollLive() {
+  if(state.liveStopped)return;
+  let timeout;
+  try {
+    if(!state.config||liveBusy()||document.hidden)return;
+    const controller=new AbortController();timeout=setTimeout(()=>controller.abort(),8000);
+    const data=await api(`/api/project-live?after=${state.liveSeq||0}&instance=${encodeURIComponent(state.liveInstance||'')}&configRevision=${state.config.revision||0}&round=${state.document.round}`,{signal:controller.signal});
+    // A local edit may have begun during the request. Do not consume this
+    // cursor until it is safe: the next poll must replay the missed changes.
+    if(liveBusy()||state.liveStopped)return;
+    if(data.projectId!==state.config.id){$('liveState').textContent='项目已切换，请刷新';return;}
+    if(data.reset){adopt(await api('/api/project'));return;}
+    const changed=mergeLiveAnnotations(state.videos,data.changes);
+    state.liveSeq=data.seq;state.liveInstance=data.instance;
+    state.connectionLost=false;
+    if(state.workspaceUnsynced&&Date.now()-(state.workspaceRetryAt||0)>10000){state.workspaceRetryAt=Date.now();saveBrowseRemote(state.workspace);}
+    if(changed){renderProgress();renderList();renderAnnotation();}
+    $('progressText').title=state.config.labels.map(label=>`${label.name} ${data.labels[label.id]||0}`).join(' · ');
+    $('liveState').textContent=`实时 ${data.counts.done+data.counts.review}/${data.total}`;$('liveState').title=`每2秒同步；${data.counts.done}完成，${data.counts.review}待复核；最近成功 ${new Date().toLocaleTimeString()}`;
+  } catch(error) {
+    if(!state.liveStopped){$('liveState').textContent='同步重连中';$('liveState').title=error.message;if(!state.connectionLost){notice('审核服务连接中断。浏览断点和未保存标注在本机保留；恢复服务后刷新可继续。',true);state.connectionLost=true;}}
+  } finally {
+    clearTimeout(timeout);
+    if(!state.liveStopped)liveTimer=setTimeout(pollLive,2000);
+  }
+}
 $('rescan').onclick=async()=>{try{await flush();adopt(await post('/api/rescan'));notice('列表已刷新，原标注保留');}catch(error){notice(error.message);}};
 $('saveView').onclick=async()=>{const name=prompt('视图名称，例如“设备 A 的未审核视频”');if(!name)return;try{const views=[...state.document.views,{name,search:$('search').value,status:$('statusFilter').value,label:$('labelFilter').value,sort:$('sort').value}];await post('/api/views',{views});state.document.views=views;$('views').innerHTML='<option value="">已保存视图…</option>'+views.map((view,index)=>`<option value="${index}">${escapeText(view.name)}</option>`).join('');}catch(error){notice(error.message);}};
-$('views').onchange=()=>{const view=state.document.views[Number($('views').value)];if(!view||$('views').value==='')return;$('search').value=view.search;$('statusFilter').value=view.status;$('labelFilter').value=view.label;$('sort').value=view.sort;renderList(true);};
+$('views').onchange=()=>{const view=state.document.views[Number($('views').value)];if(!view||$('views').value==='')return;$('search').value=view.search;$('statusFilter').value=view.status;$('labelFilter').value=view.label;$('sort').value=view.sort;renderList(true);rememberWorkspace();};
 
 // Project settings are edited as a draft; Cancel never mutates saved rules.
 function showTab(name) {document.querySelectorAll('[data-tab]').forEach(element=>element.classList.toggle('active',element.dataset.tab===name));document.querySelectorAll('[data-pane]').forEach(element=>element.hidden=element.dataset.pane!==name);}
@@ -339,6 +422,7 @@ $('saveConfig').onclick=async()=>{try{await flush();const config=readConfig();co
 $('savePersonalKeys').onclick=()=>{try{state.keys.seekSeconds=Number($('configSeek').value);if(!Number.isFinite(state.keys.seekSeconds)||state.keys.seekSeconds<.04||state.keys.seekSeconds>86400)throw new Error('跳转秒数需在 0.04–86400 之间');validKeys(state.keys);state.personal=clone(state.keys);localStorage.setItem(projectKey('keys'),JSON.stringify(state.personal));$('settingsError').textContent='个人快捷键已保存；不影响同事的项目默认值';$('back').textContent=`−${effectiveKeys().seekSeconds}s`;$('forward').textContent=`+${effectiveKeys().seekSeconds}s`;renderAnnotation();}catch(error){$('settingsError').textContent=error.message;}};
 $('resetPersonalKeys').onclick=()=>{state.personal={};localStorage.removeItem(projectKey('keys'));state.keys=clone(effectiveKeys());$('configSeek').value=state.keys.seekSeconds;renderKeyEditor();renderAnnotation();};
 function download(name,data) {const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=name;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('saveReusableRule').onclick=async()=>{try{const config=readConfig();const name=prompt('配置名称',config.name||'');if(!name?.trim())return;const library=await api('/api/rule-templates');if(library.templates.some(t=>t.name===name.trim())&&!confirm('替换同名配置？已有项目不受影响。'))return;await post('/api/rule-templates',{name:name.trim(),config,revision:library.revision});$('settingsError').textContent='已保存为常用配置，新项目可直接选择；当前项目仍需单独保存规则';}catch(error){$('settingsError').textContent=error.message;}};
 $('exportTemplate').onclick=()=>{try{const config=readConfig();for(const key of ['id','metadataConfig','destinations','inputs'])delete config[key];config.output='output';config.clipOutput='output/clips';download('video-reviewer-template.json',config);}catch(error){$('settingsError').textContent=error.message;}};
 $('importTemplate').onchange=async event=>{try{const template=JSON.parse(await event.target.files[0].text());if(template.version!==2||!Array.isArray(template.labels))throw new Error('不是有效的 v2 规则模板');state.settings={...state.settings,...template,id:state.config.id,destinations:state.settings.destinations,inputs:state.settings.inputs,metadataConfig:state.settings.metadataConfig};state.keys=projectKeys(state.settings);populateSettings();renderLabelEditor();renderKeyEditor();$('settingsError').textContent='模板已载入草稿，点击保存才生效；已有标签不可删除';}catch(error){$('settingsError').textContent=error.message;}event.target.value='';};
 $('showPriors').onchange=()=>{localStorage.setItem(projectKey('showPriors'),$('showPriors').checked);renderMetadata();};
@@ -429,13 +513,14 @@ document.addEventListener('keydown',event=>{
 });
 function moveDevice(delta) {const current=device(state.current),devices=[...new Set(ordered().map(device).filter(Boolean))];const index=devices.indexOf(current)+delta;if(index>=0&&index<devices.length){$('search').value=devices[index];renderList();const video=filtered()[0];if(video)selectVideo(video.id);}}
 addEventListener('beforeunload',event=>{if(state.pending.length){event.preventDefault();event.returnValue='';}});
-addEventListener('pagehide',()=>{clearTimeout(cursorTimer);deck.dispose();});
+addEventListener('pagehide',()=>{state.liveStopped=true;clearTimeout(liveTimer);clearTimeout(cursorTimer);if(state.workspace)saveBrowseRemote(state.workspace,true);deck.dispose();});
 async function init() {
   const document=await api('/api/project');adopt(document,false);
   try{state.pending=JSON.parse(localStorage.getItem(projectKey('pending'))||'[]');if(!Array.isArray(state.pending))state.pending=[];}catch{state.pending=[];}
   for(const task of state.pending){const video=state.videos.find(item=>item.id===task.id);if(video)video.annotation={...task.annotation,revision:task.revision+1};}
   if(state.pending.length){renderAnnotation();renderProgress();renderList();notice(`恢复 ${state.pending.length} 条上次未确认保存的记录，正在重试`);drain();}
   updateSaveState();
+  state.liveStopped=false;pollLive();
   if(document.migration.imported)notice(`已迁入 ${document.migration.imported} 条旧进度，旧文件保留。目录原分类与本轮完成状态已分开。`);
   const warnings=[document.warning,document.metadataWarning,...(document.migration.warnings||[])].filter(Boolean);if(warnings.length)notice(warnings.slice(0,4).join('；'),true);
   api('/api/export-history').then(data=>{const latest=data.runs[0];if(latest&&(latest.failureCount||latest.status==='interrupted')){historyButton.textContent='整理历史 · 待处理';if(!warnings.length)notice('检测到上次整理有失败或中断。点击“整理历史”可查看并继续，已保存标签保留。',true);}return api('/api/export-status');}).then(job=>{if(job.status==='running'){state.exportRunning=true;pollExport();}}).catch(()=>{});

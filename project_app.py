@@ -24,6 +24,7 @@ from reviewer import VIDEO_EXTENSIONS, copy_file_bytes, ffprobe_duration, ffprob
 from project_schema import VERSION, preset, validate
 from project_store import ConflictError, ProjectStore, atomic_json
 from file_paths import io_path
+from camera_regions import validate_regions
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -46,7 +47,11 @@ class ProjectApp(LabelApp):
         self.store = ProjectStore(self.source / ".video-reviewer", progress=self.report)
         self.lock = self.store.mutex
         self.state = self.store.state
+        self.live_instance = str(uuid.uuid4())
+        self.live_base_seq = self.state['seq']
+        self.live_changes = {}
         self.config_path = self.store.directory / "project.json"
+        self.regions_path = self.store.directory / "camera-regions.json"
         self.cache = user_cache_dir("unified-preview")
         self.cache.mkdir(parents=True, exist_ok=True)
         self.closing = threading.Event()
@@ -65,6 +70,8 @@ class ProjectApp(LabelApp):
         self.proxy_threads = []
         self.migration = self.state.get("migration", {"imported": 0, "files": []})
         try:
+            if "cameraRegions" in self.selection:
+                atomic_json(self.regions_path, validate_regions(self.selection["cameraRegions"]))
             if self.config_path.exists():
                 self.config = validate(ProjectStore.read_json(self.config_path))
             else:
@@ -98,6 +105,7 @@ class ProjectApp(LabelApp):
             self.metadata_skip_requested = None  # Startup-only; settings can load CSV later.
             if not self.state.get("migrationComplete"):
                 self._migrate()
+            self.live_base_seq = self.state['seq']
             for index in range(2):
                 worker = threading.Thread(target=self._proxy_worker, daemon=True, name=f"preview-{index}")
                 self.proxy_threads.append(worker)
@@ -423,6 +431,11 @@ class ProjectApp(LabelApp):
             self.store.commit(merge={'assets': changes})
         self.videos, self.video_by_id = videos, {video.id: video for video in videos}
         self._save_metadata_config()
+        # A rescan can change identities, locations or metadata. Existing pages
+        # request one full snapshot instead of merging an incompatible delta.
+        self.live_instance = str(uuid.uuid4())
+        self.live_base_seq = self.state['seq']
+        self.live_changes.clear()
 
     def _save_metadata_config(self):
         if self.metadata_deferred:
@@ -518,7 +531,56 @@ class ProjectApp(LabelApp):
     def document(self):
         with self.lock:
             missing = [value["name"] for key, value in self.state["assets"].items() if key not in self.video_by_id]
-            return {"version": VERSION, "source": str(self.source), "config": self.config, "videos": self.public_videos(), "cursor": self.state.get("cursor"), "views": self.state["views"], "seq": self.state["seq"], "round": self.state["round"], "migration": self.migration, "warning": self.store.warning, "metadataWarning": self.metadata_warning, 'inputWarnings': self.input_warnings, "missing": missing, **self.metadata_info()}
+            return {"version": VERSION, "source": str(self.source), "config": self.config, "videos": self.public_videos(), "cursor": self.state.get("cursor"), "workspace": copy.deepcopy(self.state.get("workspace")), "views": self.state["views"], "seq": self.state["seq"], 'liveInstance': self.live_instance, "round": self.state["round"], "migration": self.migration, "warning": self.store.warning, "metadataWarning": self.metadata_warning, 'inputWarnings': self.input_warnings, "missing": missing, **self.metadata_info()}
+
+    def save_cursor(self, payload):
+        """Persist browsing only; never alter labels, history or export plans."""
+        with self.lock:
+            identity = payload.get('id')
+            if identity:
+                self.get_video(identity)
+            changes = {'cursor': identity}
+            workspace = payload.get('workspace')
+            if workspace is not None:
+                if not isinstance(workspace, dict) or workspace.get('projectId') != self.config['id'] or workspace.get('round') != self.state['round'] or workspace.get('id') != identity:
+                    raise ValueError('浏览断点不属于当前项目或当前复核轮次')
+                filters = workspace.get('filters')
+                if not isinstance(filters, dict) or not isinstance(filters.get('search'), str) or len(filters['search']) > 2000:
+                    raise ValueError('浏览筛选条件无效')
+                if filters.get('status') not in {'all', 'pending', 'review', 'done'} or filters.get('sort') not in {'filename', 'device'} or filters.get('label') not in {'', *(label['id'] for label in self.config['labels'])}:
+                    raise ValueError('浏览筛选条件无效')
+                stamp = workspace.get('updatedAt')
+                if isinstance(stamp, bool) or not isinstance(stamp, int) or not 0 < stamp < 2**53:
+                    raise ValueError('浏览断点时间无效')
+                old = self.state.get('workspace') or {}
+                if old.get('round') == self.state['round'] and old.get('updatedAt', 0) > stamp:
+                    return {'seq': self.state['seq'], 'stale': True}
+                changes['workspace'] = {'projectId': self.config['id'], 'round': self.state['round'],
+                    'id': identity, 'updatedAt': stamp, 'filters': {key: filters[key] for key in ('search', 'status', 'label', 'sort')}}
+            self.store.commit(changes)
+            return {'seq': self.state['seq']}
+
+    def live_snapshot(self, after=0, instance='', config_revision=-1, round_number=-1):
+        """Small in-memory deltas, independent of NAS scans and media decoding."""
+        with self.lock:
+            after = int(after)
+            reset = (instance != self.live_instance or after < self.live_base_seq
+                or after > self.state['seq'] or int(config_revision) != self.config.get('revision', 0)
+                or int(round_number) != self.state['round'])
+            counts = {'done': 0, 'review': 0, 'pending': 0}
+            labels = {}
+            for video in self.videos:
+                annotation = self.state['annotations'].get(video.id, {})
+                status = annotation.get('status', 'pending') if annotation.get('round', 1) == self.state['round'] else 'pending'
+                counts[status] += 1
+                label = annotation.get('label')
+                if label:
+                    labels[label] = labels.get(label, 0) + 1
+            changes = [] if reset else [{'id': identity, 'annotation': self.annotation(identity)}
+                for identity, sequence in self.live_changes.items() if sequence > after and identity in self.video_by_id]
+            return {'projectId': self.config['id'], 'seq': self.state['seq'], 'instance': self.live_instance,
+                'round': self.state['round'], 'configRevision': self.config.get('revision', 0),
+                'reset': reset, 'changes': changes, 'counts': counts, 'labels': labels, 'total': len(self.videos)}
 
     def save_annotation(self, payload):
         with self.lock:
@@ -569,6 +631,7 @@ class ProjectApp(LabelApp):
             value.update(revision=current["revision"] + 1, round=self.state["round"], token=token, updatedAt=time.time())
             history = (self.state["history"] + [{"id": identity, "before": current, "afterRevision": value["revision"]}])[-100:]
             self.store.commit({"history": history}, {"annotations": {identity: value}})
+            self.live_changes[identity] = self.state['seq']
             return value
 
     def undo(self):
@@ -590,6 +653,7 @@ class ProjectApp(LabelApp):
                     previous["afterRevision"] = value["revision"]
                     break
             self.store.commit({"history": history}, {"annotations": {item["id"]: value}})
+            self.live_changes[item['id']] = self.state['seq']
             return {"id": item["id"], "annotation": value}
 
     def configure(self, payload):
@@ -1073,10 +1137,18 @@ class ProjectHandler(LabelHandler):
             app = self.server.app
             if route.path == "/":
                 self._send_file(APP_DIR / "workbench.html", False)
-            elif route.path in {"/assets/workbench.js", "/assets/workbench.css", "/assets/media.js"}:
+            elif route.path in {"/assets/workbench.js", "/assets/workbench.css", "/assets/media.js", "/assets/regions.js"}:
                 self._send_file(APP_DIR / route.path.rsplit("/", 1)[-1], False)
+            elif route.path == "/api/rule-templates":
+                self.send_json(self.server.launcher_app.rule_templates.read())
+            elif route.path == "/api/camera-regions":
+                with app.lock:
+                    self.send_json({"rows": ProjectStore.read_json(app.regions_path) if app.regions_path.exists() else []})
             elif route.path == "/api/project":
                 self.send_json(app.document())
+            elif route.path == '/api/project-live':
+                self.send_json(app.live_snapshot(query.get('after', ['0'])[0], query.get('instance', [''])[0],
+                    query.get('configRevision', ['-1'])[0], query.get('round', ['-1'])[0]))
             elif route.path == "/api/video-info":
                 self.send_json(app.video_info(query.get("id", [""])[0]))
             elif route.path == "/api/export-plan":
@@ -1146,7 +1218,14 @@ class ProjectHandler(LabelHandler):
                 raise ValueError('请求必须是 JSON 对象')
             app = self.server.app
             route = urlparse(self.path).path
-            if route == "/api/annotation":
+            if route == "/api/rule-templates":
+                self.send_json(self.server.launcher_app.rule_templates.save(data))
+            elif route == "/api/camera-regions":
+                rows = validate_regions(data.get("rows"))
+                with app.lock:
+                    atomic_json(app.regions_path, rows)
+                self.send_json({"rows": rows})
+            elif route == "/api/annotation":
                 self.send_json({"annotation": app.save_annotation(data), "seq": app.state["seq"]})
             elif route == "/api/undo":
                 self.send_json({**app.undo(), "seq": app.state["seq"]})
@@ -1156,12 +1235,7 @@ class ProjectHandler(LabelHandler):
                 app.scan()
                 self.send_json(app.document())
             elif route == "/api/cursor":
-                identity = data.get("id")
-                if identity:
-                    app.get_video(identity)
-                with app.lock:
-                    app.store.commit({"cursor": identity})
-                self.send_json({"seq": app.state["seq"]})
+                self.send_json(app.save_cursor(data))
             elif route == "/api/views":
                 views = data.get("views", [])
                 if not isinstance(views, list) or len(views) > 30:
