@@ -37,6 +37,11 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.locator('#sort').selectOption('device');await page.locator('#search').fill('synthetic-11990.mp4');await page.waitForFunction(()=>document.getElementById('queueCount').textContent==='1 条');
   assert(await page.locator('.video-item.active').count(),'Current video disappeared outside filter');
   await page.unroute('**/api/project');await page.reload();await page.waitForFunction(()=>state.videos.length===8&&deck.readyToReview);
+  // Browsing filters now survive reload. Verify restoration, then reset this
+  // synthetic-only search before testing real-video keyboard navigation.
+  assert.equal(await page.locator('#search').inputValue(),'synthetic-11990.mp4');
+  await page.locator('#search').fill('');await page.waitForFunction(()=>document.getElementById('queueCount').textContent==='8 条');
+  await page.locator('#videoName').click();
   console.log(JSON.stringify({largeQueueEntries:12000,largeQueueFlowMs:Date.now()-largeBegan}));
   await page.screenshot({path:path.join(root,'workspace.png')});
   for(const size of [{width:1920,height:1080},{width:1366,height:768},{width:1093,height:614},{width:1024,height:640}]){
