@@ -136,6 +136,7 @@ function complete() {
   patchAnnotation({status:'done'},true);
 }
 function device(video) {
+  if(video.sourceIdentity?.conflict) return "设备关联冲突";
   if(video.metadataDeviceId) return video.metadataDeviceId;
   if(state.config.deviceRegex) {try{return new RegExp(state.config.deviceRegex).exec(video.name)?.[1]||'';}catch{}}
   return '';

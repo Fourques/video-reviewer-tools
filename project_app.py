@@ -25,6 +25,7 @@ from project_schema import VERSION, preset, validate
 from project_store import ConflictError, ProjectStore, atomic_json
 from file_paths import io_path
 from camera_regions import validate_regions
+from source_identity import read_source_identities
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -430,6 +431,7 @@ class ProjectApp(LabelApp):
         if changes:
             self.store.commit(merge={'assets': changes})
         self.videos, self.video_by_id = videos, {video.id: video for video in videos}
+        self.source_identities, self.source_identity_warnings = read_source_identities(self.source, videos)
         self._save_metadata_config()
         # A rescan can change identities, locations or metadata. Existing pages
         # request one full snapshot instead of merging an incompatible delta.
@@ -526,7 +528,17 @@ class ProjectApp(LabelApp):
         counts = {}
         for video in self.videos:
             counts[video.name.casefold()] = counts.get(video.name.casefold(), 0) + 1
-        return [{**video.public(self.annotation(video.id)["label"], counts[video.name.casefold()] > 1), "annotation": self.annotation(video.id)} for video in self.videos]
+        result = []
+        for video in self.videos:
+            value = video.public(self.annotation(video.id)["label"], counts[video.name.casefold()] > 1)
+            source = self.source_identities.get(video.name, {})
+            if source.get('did') and value.get('metadataDeviceId') and source['did'] != value['metadataDeviceId']:
+                source = {**source, 'conflict': True}
+            value['sourceIdentity'] = source
+            if not source.get('conflict'):
+                value['metadataDeviceId'] = value.get('metadataDeviceId') or source.get('did', '')
+            result.append({**value, 'annotation': self.annotation(video.id)})
+        return result
 
     def document(self):
         with self.lock:
