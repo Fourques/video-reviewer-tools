@@ -38,3 +38,5 @@
 }
 
 .region-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;padding:6px 0}.region-tools label{cursor:pointer}.region-tools .file-button{color:#9ecbff}#cameraRegionOverlay{position:absolute;pointer-events:none;z-index:3;overflow:hidden}#cameraRegionOverlay[hidden]{display:none}#cameraRegionOverlay polygon{fill:#38bdf824;stroke:#38bdf8;stroke-width:2;vector-effect:non-scaling-stroke}
+/* Keep enough queue space on short laptop displays. */
+@media(max-height:700px){.queue-tools{padding:9px 10px 7px;gap:5px}.queue-tools input,.queue-tools select,.queue-tools button{padding-top:5px;padding-bottom:5px}.queue-footer{padding:7px}.region-tools{gap:8px;padding:2px 0}}
