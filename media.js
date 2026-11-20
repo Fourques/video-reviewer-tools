@@ -2,22 +2,36 @@
    Playback intent belongs to the reviewer, never to a particular video element. */
 (() => {
   const defaults = {rate: 1.5, loop: true, muted: true, autoplay: true};
+  const STALL_TIMEOUT = 2000;
+  const FRAME_INTERVAL = 80;
   class MediaDeck {
     constructor(elements, api, callbacks = {}) {
       this.api = api; this.callbacks = callbacks;
       this.preferences = {...defaults};
       try {Object.assign(this.preferences, JSON.parse(localStorage.getItem('videoReviewer.quickLabel.playback.v1') || '{}'));} catch {}
-      if (![0.5,0.75,1,1.25,1.5,2,3,4,8,12,16,20].includes(Number(this.preferences.rate))) this.preferences.rate = 1.5;
+      this.preferences.rate = Number(this.preferences.rate);
+      if (!REVIEW_PLAYBACK_RATES.includes(this.preferences.rate)) this.preferences.rate = defaults.rate;
       this.wantPlay = this.preferences.autoplay; this.boundary = null; this.selected = null;
       this.slots = elements.map(element => ({element, id: null, token: 0, proxy: false, ready: false, timer: null, controller: null}));
-      this.slot = this.slots[0]; this.seeking = null; this.intentional = false;
+      this.slot = this.slots[0]; this.seeking = null;
+      this.watchTimer = null; this.scan = null;
       for (const slot of this.slots) {
         const video = slot.element;
         video.addEventListener('loadeddata', () => this.ready(slot));
         video.addEventListener('error', () => {if (slot.id) this.proxy(slot);});
         video.addEventListener('timeupdate', () => this.tick(slot));
         video.addEventListener('seeked', () => {if (slot === this.slot) {this.flushSeek(); this.tick(slot);}});
-        video.addEventListener('ended', () => {if (slot === this.slot && this.preferences.loop && this.wantPlay) {video.currentTime = this.boundary?.start || 0; this.play();}});
+        video.addEventListener('ended', () => {
+          if (slot !== this.slot || this.scan) return;
+          if (this.preferences.loop && this.wantPlay) {
+            video.currentTime = this.boundary?.start || 0;
+            reanchorEffectiveRate(video);
+            this.play();
+          } else {
+            this.stopWatch();
+            stopEffectiveRate(video);
+          }
+        });
       }
       this.emit();
     }
@@ -26,18 +40,23 @@
     emit() {this.callbacks.onPreferences?.(this.preferences, this.wantPlay);}
     set(key, value) {
       if (!(key in defaults)) return;
+      if (key === 'rate' && !REVIEW_PLAYBACK_RATES.includes(Number(value))) return;
       this.preferences[key] = key === 'rate' ? Number(value) : Boolean(value);
+      if (key === 'rate') this.stopScan();
       if (key === 'autoplay') this.wantPlay = Boolean(value);
       try {localStorage.setItem('videoReviewer.quickLabel.playback.v1', JSON.stringify(this.preferences));} catch {}
       this.apply(); this.emit();
       if (key === 'autoplay' && this.wantPlay) this.play();
+      if (key === 'rate' && this.wantPlay) this.play();
     }
     apply() {
       this.player.muted = this.preferences.muted;
-      this.player.loop = this.preferences.loop && !this.boundary;
-      applyEffectiveRate(this.player, this.preferences.rate);
+      this.player.loop = !this.scan && this.preferences.loop && !this.boundary;
+      if (!this.scan) applyEffectiveRate(this.player, Math.min(this.preferences.rate, maxPlaybackRate(this.player)));
     }
     select(id, next) {
+      this.stopWatch();
+      this.stopScan();
       const previous = this.slot;
       stopEffectiveRate(previous.element); previous.element.pause();
       this.selected = id; this.boundary = null; this.seeking = null;
@@ -82,6 +101,7 @@
     }
     async proxy(slot, force = false) {
       if (slot.proxy && !force) return;
+      if (slot === this.slot) {this.stopWatch(); this.stopScan();}
       clearTimeout(slot.timer); slot.proxy = true; slot.ready = false;
       const id = slot.id, token = slot.token, signal = slot.controller.signal;
       if (slot === this.slot) this.callbacks.onLoading?.('正在生成兼容预览；原视频不会修改…');
@@ -103,17 +123,94 @@
     async play() {
       this.wantPlay = true; this.emit();
       if (!this.readyToReview) return;
-      this.apply();
       const slot = this.slot;
+      if (this.scan) return;
+      if (this.preferences.rate > maxPlaybackRate(slot.element) && this.startScan()) return;
+      this.apply();
+      const token = slot.token;
+      this.watchPlayback(slot);
       try {await slot.element.play();}
-      catch (error) {if (slot === this.slot && error.name !== 'AbortError') this.callbacks.onError?.(error.name === 'NotAllowedError' ? '浏览器限制自动播放，按 S 或点击播放开始' : '播放失败，请重试兼容预览');}
+      catch (error) {
+        if (slot !== this.slot || slot.token !== token || !this.wantPlay || error.name === 'AbortError') return;
+        if (this.preferences.rate >= 6 && error.name !== 'NotAllowedError' && this.startScan()) return;
+        this.pause();
+        this.callbacks.onError?.(error.name === 'NotAllowedError' ? '浏览器限制自动播放，按 S 或点击播放开始' : '播放失败，请重试兼容预览');
+      }
     }
-    pause() {this.wantPlay = false; this.player.pause(); stopEffectiveRate(this.player); this.emit();}
-    toggle() {this.wantPlay ? this.pause() : this.play();}
+    stopWatch() {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    watchPlayback(slot) {
+      this.stopWatch();
+      if (this.preferences.rate < 6) return;
+      const video = slot.element;
+      const token = slot.token;
+      let position = video.currentTime;
+      let lastProgress = performance.now();
+      this.watchTimer = setInterval(() => {
+        if (slot !== this.slot || token !== slot.token || !this.wantPlay || video.ended) {
+          this.stopWatch();
+          return;
+        }
+        const now = performance.now();
+        if (document.hidden || Math.abs(video.currentTime - position) > 0.01) {
+          position = video.currentTime;
+          lastProgress = now;
+          return;
+        }
+        if (now - lastProgress < STALL_TIMEOUT) return;
+        this.startScan();
+      }, 250);
+    }
+    startScan() {
+      if (this.scan) return true;
+      const video = this.player;
+      if (!Number.isFinite(video.duration) || video.duration <= 0) return false;
+      this.stopWatch();
+      stopEffectiveRate(video);
+      video.pause();
+      const scan = this.scan = {position:video.ended ? 0 : video.currentTime, began:performance.now(), timer:null};
+      this.apply();
+      this.callbacks.onFramePreview?.(true);
+      // Advance on a wall clock. Leave each seek time to complete so the decoder
+      // can display a frame before receiving the next request.
+      scan.timer = setInterval(() => {
+        if (document.hidden) {this.anchorScan(video.currentTime); return;}
+        if (video.seeking || this.seeking !== null) return;
+        const start = this.boundary?.start ?? 0;
+        const end = this.boundary?.end ?? video.duration;
+        if (end <= start) return;
+        const position = scan.position + (performance.now() - scan.began) * this.preferences.rate / 1000;
+        const looping = this.preferences.loop;
+        const target = looping ? start + ((position - start) % (end - start) + end - start) % (end - start)
+          : Math.min(position, video.duration);
+        if (!looping && target >= video.duration) {
+          video.currentTime = video.duration;
+          this.pause();
+        } else if (Math.abs(video.currentTime - target) > 0.001) {
+          video.currentTime = target;
+        }
+      }, FRAME_INTERVAL);
+      return true;
+    }
+    anchorScan(position) {
+      if (!this.scan) return;
+      this.scan.position = position;
+      this.scan.began = performance.now();
+    }
+    stopScan() {
+      if (!this.scan) return;
+      clearInterval(this.scan.timer);
+      this.scan = null;
+      this.callbacks.onFramePreview?.(false);
+    }
+    pause() {this.wantPlay = false; this.stopWatch(); this.stopScan(); this.player.pause(); stopEffectiveRate(this.player); this.emit();}
+    toggle() {this.wantPlay && !this.player.ended ? this.pause() : this.play();}
     tick(slot) {
       if (slot !== this.slot) return;
       const video = slot.element;
-      if (this.boundary && this.preferences.loop && this.wantPlay && video.currentTime >= this.boundary.end - 0.025) {
+      if (!this.scan && this.boundary && this.preferences.loop && this.wantPlay && video.currentTime >= this.boundary.end - 0.025) {
         video.currentTime = this.boundary.start; reanchorEffectiveRate(video);
         if (video.paused) this.play();
       }
@@ -130,11 +227,12 @@
       if (this.player.seeking || this.seeking === null) return;
       const target = this.seeking; this.seeking = null;
       this.player.currentTime = target; reanchorEffectiveRate(this.player);
-      if (this.wantPlay && this.player.paused) this.play();
+      this.anchorScan(target);
+      if (this.wantPlay && this.player.paused && !this.scan) this.play();
     }
     preview(start, end) {this.boundary = {start,end}; this.player.loop = false; this.seek(start, true); this.play();}
     clearBoundary() {this.boundary = null; this.apply();}
-    dispose() {for (const slot of this.slots) {clearTimeout(slot.timer); slot.controller?.abort(); stopEffectiveRate(slot.element); slot.element.pause();}}
+    dispose() {this.stopWatch(); this.stopScan(); for (const slot of this.slots) {clearTimeout(slot.timer); slot.controller?.abort(); stopEffectiveRate(slot.element); slot.element.pause();}}
   }
   window.MediaDeck = MediaDeck;
 })();

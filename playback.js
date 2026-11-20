@@ -1,6 +1,6 @@
 /* Playback preferences are independent of project labels and review progress. */
 (function (root) {
-  const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 8, 12, 16, 20];
+  const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12, 16, 20];
   const DEFAULTS = {rate:1.5, autoplay:true, loop:true, muted:true};
   // How often a speed above the browser ceiling pulls the clip forward. Every pull
   // costs a seek and a seek costs playback time, so the tick has to be long enough to
@@ -11,16 +11,23 @@
   // have the last moments of a clip skipped past, so the correction stands down there.
   const TAIL = 0.25;
   const catchUps = new WeakMap();
+  const ceilings = new WeakMap();
   // Browsers refuse a playbackRate above their own ceiling (Chromium and Firefox
   // throw NotSupportedError past 16x), so a faster speed is played at the ceiling
   // and the missing media time is skipped, keeping the real speed honest.
   function maxPlaybackRate(player) {
+    if (ceilings.has(player)) return ceilings.get(player);
     const restore = player.playbackRate;
     let ceiling = 1;
-    for (const candidate of [2, 4, 8, 16, 20, 32, 64]) {
-      try { player.playbackRate = candidate; ceiling = candidate; } catch { break; }
+    for (const candidate of [2, 4, 6, 8, 12, 16, 20]) {
+      try {
+        player.playbackRate = candidate;
+        if (player.playbackRate !== candidate) break;
+        ceiling = candidate;
+      } catch { break; }
     }
     try { player.playbackRate = restore; } catch {}
+    ceilings.set(player, ceiling);
     return ceiling;
   }
   function stopEffectiveRate(player) {
@@ -33,8 +40,8 @@
   // second that the skip handler has to make up.
   function applyEffectiveRate(player, rate) {
     const native = Math.min(rate, maxPlaybackRate(player));
-    player.defaultPlaybackRate = native;
-    player.playbackRate = native;
+    if (player.defaultPlaybackRate !== native) player.defaultPlaybackRate = native;
+    if (player.playbackRate !== native) player.playbackRate = native;
     const extra = Math.max(0, rate - native);
     const running = catchUps.get(player);
     // Re-applying the same speed must leave the correction alone: canplay fires
@@ -55,7 +62,7 @@
       // A pause stops the clock, not the flow; a seek that has not landed must not be
       // stacked on, or the element never leaves seeking and the clip crawls. Both mean
       // the clock starts again from wherever the clip really is.
-      if (player.paused || player.seeking) { state.wall = mark; state.media = now; return; }
+      if (player.paused || player.seeking || player.readyState < 3) { state.wall = mark; state.media = now; return; }
       const projected = state.media + rate * (mark - state.wall) / 1000;
       if (!Number.isFinite(duration)) {
         if (now < projected - 0.05) player.currentTime = projected;
@@ -232,6 +239,7 @@
     }
   }
   root.ReviewPlayback = ReviewPlayback;
+  root.REVIEW_PLAYBACK_RATES = Object.freeze(RATES);
   root.migrateSeekPreference = migrateSeekPreference;
   root.applyEffectiveRate = applyEffectiveRate;
   root.stopEffectiveRate = stopEffectiveRate;

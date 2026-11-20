@@ -277,6 +277,7 @@ async function addSegment() {
 function seek(delta) {deck.clearBoundary();deck.seek(delta);if(state.config.intervals){$('segmentStart').value=deck.seeking??deck.player.currentTime;updateDraft();}}
 
 let deck=new MediaDeck([$ ('videoA'),$('videoB')],api,{
+  onFramePreview:active=>{$('rateStatus').textContent=active ? '按所选倍速抽帧预览' : '';},
   onPreferences:(preferences,playing)=>{$('rate').value=String(preferences.rate);$('loop').classList.toggle('active',preferences.loop);$('mute').classList.toggle('active',preferences.muted);$('play').textContent=playing?'Ⅱ 暂停':'▶ 播放';$('autoplay').checked=preferences.autoplay;},
   onLoading:message=>{$('mediaOverlay').hidden=false;$('mediaOverlay').textContent=message;$('mediaOverlay').classList.remove('error');if(state.config)renderAnnotation();},
   onReady:(id,proxy,duration)=>{if(state.current?.id!==id)return;$('mediaOverlay').hidden=true;$('previewKind').textContent=proxy?'兼容预览 · 导出使用原视频':'原视频预览 · 不改变源文件';state.current.duration=duration;$('clock').textContent=`${time(deck.player.currentTime)} / ${time(duration)}`;renderAnnotation();renderTimeline();},

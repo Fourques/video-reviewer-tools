@@ -26,6 +26,26 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   await page.goto(base);await page.waitForFunction(()=>typeof deck!=='undefined'&&deck.readyToReview);
   assert.equal(await page.evaluate(()=>state.videos.length),8);
   assert.equal(await page.evaluate(()=>videoReviewerBrowserSupported),true);
+  assert.equal(await page.evaluate(()=>maxPlaybackRate(deck.player)),16);
+  await page.locator('#rate').selectOption('6');
+  await page.waitForFunction(()=>deck.player.playbackRate===6 && deck.player.currentTime>0.3);
+  await page.locator('#rate').selectOption('8');
+  await page.waitForFunction(()=>deck.player.playbackRate===8 && !deck.player.paused);
+  // Reproduce a mid-clip media-element stop in a real decoder while review
+  // playback is still requested. Recovery must keep the chosen speed.
+  await page.evaluate(()=>deck.player.pause());
+  await page.waitForFunction(()=>deck.scan && deck.preferences.rate===8);
+  assert.match(await page.locator('#rateStatus').textContent(),/按所选倍速/);
+  await page.locator('#rate').selectOption('20');
+  await page.waitForFunction(()=>deck.scan && deck.preferences.rate===20 && !deck.player.seeking);
+  const advances=await page.evaluate(()=>new Promise(resolve=>{
+   let frames=0;
+   const count=()=>frames++;
+   deck.player.addEventListener('seeked',count);
+   setTimeout(()=>{deck.player.removeEventListener('seeked',count);resolve(frames);},450);
+  }));
+  assert(advances>=2,'20× must continue decoding frames through serialized seeks');
+  await page.locator('#rate').selectOption('1.5');
   assert.equal(await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),'rgb(17, 21, 28)');
   // The fallback explanation itself must work when modern application JS can't.
   const legacy=await browser.newPage();await legacy.addInitScript(()=>Object.defineProperty(document,'documentMode',{value:11}));await legacy.goto(base+'/projects');await legacy.locator('#browserCompatibilityError').waitFor({state:'visible'});assert.match(await legacy.locator('#browserCompatibilityError').textContent(),/旧 IE/);await legacy.screenshot({path:path.join(root,'unsupported-renderer.png')});await legacy.close();

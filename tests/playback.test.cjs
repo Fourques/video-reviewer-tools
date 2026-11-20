@@ -1,5 +1,7 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
+const {readFileSync} = require('node:fs');
+const vm = require('node:vm');
 const {ReviewPlayback, migrateSeekPreference, applyEffectiveRate, stopEffectiveRate, maxPlaybackRate} = require('../playback.js');
 class Player extends EventTarget {
   constructor(){super();this.paused=true;this.readyState=0;this.ended=false;this.muted=false;this.plays=0;}
@@ -20,6 +22,47 @@ class CappedPlayer extends Player {
   }
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+test('high-speed stalls recover at the requested speed and manual pause stops scanning', async () => {
+  let now = 0;
+  const timers = new Set();
+  const context = vm.createContext({
+    window: {}, document: {hidden:false}, performance: {now:() => now},
+    REVIEW_PLAYBACK_RATES: [4, 6, 8], localStorage: {getItem:() => '{"rate":6}', setItem() {}},
+    applyEffectiveRate, maxPlaybackRate, stopEffectiveRate, reanchorEffectiveRate() {},
+    setInterval: fn => {timers.add(fn); return fn;}, clearInterval: fn => timers.delete(fn)
+  });
+  vm.runInContext(readFileSync(require.resolve('../media.js'), 'utf8'), context);
+  const player = new CappedPlayer();
+  player.readyState = 3;
+  player.currentTime = 2;
+  player.duration = 30;
+  const deck = new context.window.MediaDeck([player], null);
+  Object.assign(deck.slot, {id:'first', ready:true});
+  deck.selected = 'first';
+  assert.equal(deck.preferences.rate, 6);
+  deck.set('rate', 8);
+  assert.equal(player.playbackRate, 8);
+  now = 2100;
+  player.currentTime = 3;
+  for (const tick of timers) tick();
+  assert.equal(player.playbackRate, 8);
+  now = 4200;
+  player.paused = true;
+  for (const tick of [...timers]) tick();
+  assert.ok(deck.scan);
+  assert.equal(player.currentTime, 3);
+  assert.equal(player.paused, true);
+  now = 4450;
+  for (const tick of [...timers]) tick();
+  assert.equal(player.currentTime, 5);
+  assert.equal(deck.preferences.rate, 8);
+  deck.pause();
+  now = 7000;
+  for (const tick of [...timers]) tick();
+  assert.equal(player.paused, true);
+  assert.equal(player.currentTime, 5);
+  assert.equal(timers.size, 0);
+});
 // A real element plays itself at its native rate; the correction is what has to make
 // up the difference, so the fake has to move too or the numbers mean nothing.
 function playsItself(player){
