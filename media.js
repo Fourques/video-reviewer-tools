@@ -20,6 +20,10 @@
         video.addEventListener('loadeddata', () => this.ready(slot));
         video.addEventListener('error', () => {if (slot.id) this.proxy(slot);});
         video.addEventListener('timeupdate', () => this.tick(slot));
+        video.addEventListener('pause', () => {
+          if (slot === this.slot && this.watchTimer !== null && this.wantPlay &&
+              video.paused && !video.ended && !video.seeking) this.startScan();
+        });
         video.addEventListener('seeked', () => {if (slot === this.slot) {this.flushSeek(); this.tick(slot);}});
         video.addEventListener('ended', () => {
           if (slot !== this.slot || this.scan) return;

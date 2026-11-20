@@ -29,8 +29,12 @@ const freePort=()=>new Promise(resolve=>{const probe=net.createServer();probe.li
   assert.equal(await page.evaluate(()=>maxPlaybackRate(deck.player)),16);
   await page.locator('#rate').selectOption('6');
   await page.waitForFunction(()=>deck.player.playbackRate===6 && deck.player.currentTime>0.3);
-  await page.locator('#rate').selectOption('8');
-  await page.waitForFunction(()=>deck.player.playbackRate===8 && !deck.player.paused);
+  for (const rate of [12,16,8]) {
+   await page.locator('#rate').selectOption(String(rate));
+   await page.evaluate(()=>deck.seek(0,true));
+   await page.waitForFunction(rate=>deck.player.playbackRate===rate && !deck.player.paused &&
+    !deck.scan && deck.player.currentTime>1,rate,{timeout:5000});
+  }
   // Reproduce a mid-clip media-element stop in a real decoder while review
   // playback is still requested. Recovery must keep the chosen speed.
   await page.evaluate(()=>deck.player.pause());
